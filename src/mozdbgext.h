@@ -24,13 +24,18 @@ typedef WINDBG_EXTENSION_APIS64 MOZDBGEXT_EXTENSION_APIS;
 #error Unknown processor architecture
 #endif
 
-_COM_SMARTPTR_TYPEDEF(IDebugClient, __uuidof(IDebugClient));
+_COM_SMARTPTR_TYPEDEF(IDebugClient5, __uuidof(IDebugClient5));
 _COM_SMARTPTR_TYPEDEF(IDebugControl4, __uuidof(IDebugControl4));
 _COM_SMARTPTR_TYPEDEF(IDebugAdvanced3, __uuidof(IDebugAdvanced3));
+_COM_SMARTPTR_TYPEDEF(IDebugSymbols3, __uuidof(IDebugSymbols3));
+_COM_SMARTPTR_TYPEDEF(IDebugDataSpaces4, __uuidof(IDebugDataSpaces4));
 
-extern IDebugClientPtr     sDebugClient;
-extern IDebugControl4Ptr   sDebugControl;
-extern IDebugAdvanced3Ptr  sDebugAdvanced;
+extern IDebugClient5Ptr     sDebugClient;
+extern IDebugControl4Ptr    sDebugControl;
+extern IDebugAdvanced3Ptr   sDebugAdvanced;
+extern IDebugSymbols3Ptr    sDebugSymbols;
+extern IDebugDataSpaces4Ptr sDebugDataSpaces;
+extern ULONG                sPointerWidth;
 
 #endif // __MOZDBGEXT_H
 

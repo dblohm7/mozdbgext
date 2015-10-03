@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <!--
+  <Type Name="nsTArray_Impl&lt;*&gt;" Inheritable="true">
+    <DisplayString>{{Length = {mHdr->mLength}}}</DisplayString>
+    <Expand>
+      <ArrayItems>
+        <Size>mHdr->mLength</Size>
+        <ValuePointer>(($T1*)(mHdr + 1))</ValuePointer>
+      </ArrayItems>
+      <Item Name="[Length]">mHdr->mLength</Item>
+      <Item Name="[Capacity]">mHdr->mCapacity</Item>
+    </Expand>
+  </Type>
+  <Type Name="mozilla::Vector&lt;*&gt;">
+    <DisplayString>{{Length = {mLength}}}</DisplayString>
+    <Expand>
+      <ArrayItems>
+        <Size>mLength</Size>
+        <ValuePointer>mBegin</ValuePointer>
+      </ArrayItems>
+      <Item Name="[Length]">mLength</Item>
+      <Item Name="[Capacity]">mCapacity</Item>
+    </Expand>
+  </Type>
+  <Type Name="nsAutoPtr&lt;*&gt;">
+    <DisplayString>{mRawPtr,X}</DisplayString>
+    <Expand>
+      <ExpandedItem>mRawPtr</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="nsCOMPtr&lt;*&gt;">
+    <DisplayString>{mRawPtr,X}</DisplayString>
+    <Expand>
+      <Item Name="[Reference Count]" Optional="true">mRawPtr->mRefCnt</Item>
+      <ExpandedItem>mRawPtr</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="nsRefPtr&lt;*&gt;">
+    <DisplayString>{mRawPtr,X}</DisplayString>
+    <Expand>
+      <Item Name="[Reference Count]" Optional="true">mRawPtr->mRefCnt</Item>
+      <ExpandedItem>mRawPtr</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="mozilla::StaticAutoPtr&lt;*&gt;">
+    <DisplayString>{mRawPtr,X}</DisplayString>
+    <Expand>
+      <ExpandedItem>mRawPtr</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="mozilla::StaticRefPtr&lt;*&gt;">
+    <DisplayString>{mRawPtr,X}</DisplayString>
+    <Expand>
+      <Item Name="[Reference Count]" Optional="true">mRawPtr->mRefCnt</Item>
+      <ExpandedItem>mRawPtr</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="nsCycleCollectingAutoRefCnt">
+    <DisplayString>{this->get()} (Cycle Collecting)</DisplayString>
+  </Type>
+  <Type Name="nsAutoRefCnt">
+    <DisplayString>{mValue}</DisplayString>
+  </Type>
+  <Type Name="mozilla::ThreadSafeAutoRefCnt">
+    <DisplayString>{this->get()} (Thread Safe)</DisplayString>
+  </Type>
+  <Type Name="nsAutoArrayPtr&lt;*&gt;">
+    <DisplayString>{mRawPtr,hv}</DisplayString>
+    <Expand>
+      <ExpandedItem>mRawPtr</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="nsAutoOwningThread">
+    <DisplayString>{mThread,X}</DisplayString>
+    <Expand>
+      <ExpandedItem>((PRThread*)mThread)</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="mozilla::UniquePtr&lt;*&gt;">
+    <DisplayString>{ptr(),X}</DisplayString>
+    <Expand>
+      <ExpandedItem>ptr()</ExpandedItem>
+    </Expand>
+  </Type>
+  <Type Name="mozilla::detail::PairHelper&lt;*&gt;" Inheritable="true">
+    <DisplayString>({mFirstA}, {mSecondB})</DisplayString>
+    <Expand>
+      <Item Name="first">mFirstA</Item>
+      <Item Name="second">mSecondB</Item>
+    </Expand>
+  </Type>
+  <Type Name="nsString" Inheritable="true">
+    <DisplayString>{mData,su}</DisplayString>
+    <StringView>mData,su</StringView>
+  </Type>
+  <Type Name="nsCString" Inheritable="true">
+    <DisplayString>{mData,s8}</DisplayString>
+    <StringView>mData,s8</StringView>
+  </Type>
+  -->
+  <Type Name="mozilla::Atomic&lt;*,*,*&gt;">
+    <DisplayString>{mValue}</DisplayString>
+  </Type>
+<!-- TODO?
+  <Type Name="nsIWeakReference">
+  </Type>
+-->
+</AutoVisualizer>

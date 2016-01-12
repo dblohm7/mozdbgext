@@ -4,7 +4,7 @@
 WINDBG_EXTENSION_APIS64  ExtensionApis;
 
 IDebugClient5Ptr      gDebugClient;
-IDebugControl4Ptr     gDebugControl;
+IDebugControl7Ptr     gDebugControl;
 IDebugAdvanced3Ptr    gDebugAdvanced;
 IDebugSymbols3Ptr     gDebugSymbols;
 IDebugDataSpaces4Ptr  gDebugDataSpaces;
@@ -22,10 +22,10 @@ DebugExtensionInitialize(PULONG aVersion, PULONG aFlags)
     return hr;
   }
 
-  hr = gDebugClient->QueryInterface(__uuidof(IDebugControl4),
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugControl7),
                                     (void**)&gDebugControl);
   if (!gDebugControl) {
-    dprintf("QueryInterface(IDebugControl4) failed\n");
+    dprintf("QueryInterface(IDebugControl7) failed\n");
     return hr;
   }
 

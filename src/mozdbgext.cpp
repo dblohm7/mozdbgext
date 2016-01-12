@@ -1,69 +1,66 @@
 #include "mozdbgext.h"
 
-namespace {
-
-USHORT                    sMajorVersion;
-USHORT                    sMinorVersion;
-EXT_API_VERSION           sExtApiVersion = { 1, 0, MOZDBGEXT_VERSION_REVISION };
-
-} // anonymous namespace
-
 // Naming this "ExtensionApis" is important - some wdbgexts macros depend on it
-MOZDBGEXT_EXTENSION_APIS  ExtensionApis;
+WINDBG_EXTENSION_APIS64  ExtensionApis;
 
-IDebugClient5Ptr      sDebugClient;
-IDebugControl4Ptr     sDebugControl;
-IDebugAdvanced3Ptr    sDebugAdvanced;
-IDebugSymbols3Ptr     sDebugSymbols;
-IDebugDataSpaces4Ptr  sDebugDataSpaces;
-ULONG                 sPointerWidth = 4; // Pointer width in bytes
+IDebugClient5Ptr      gDebugClient;
+IDebugControl4Ptr     gDebugControl;
+IDebugAdvanced3Ptr    gDebugAdvanced;
+IDebugSymbols3Ptr     gDebugSymbols;
+IDebugDataSpaces4Ptr  gDebugDataSpaces;
+ULONG                 gPointerWidth = 4; // Pointer width in bytes
 
-extern "C" __declspec(dllexport) VOID
-WinDbgExtensionDllInit(MOZDBGEXT_EXTENSION_APIS* aExtensionApis,
-                       USHORT aMajorVersion, USHORT aMinorVersion)
+extern "C" __declspec(dllexport) HRESULT
+DebugExtensionInitialize(PULONG aVersion, PULONG aFlags)
 {
-  ExtensionApis = *aExtensionApis;
-  sMajorVersion = aMajorVersion;
-  sMinorVersion = aMinorVersion;
+  *aVersion = DEBUG_EXTENSION_VERSION(1, 0);
+  *aFlags = 0;
 
-  HRESULT hr = DebugCreate(__uuidof(IDebugClient5), (void**)&sDebugClient);
+  HRESULT hr = DebugCreate(__uuidof(IDebugClient5), (void**)&gDebugClient);
   if (FAILED(hr)) {
     dprintf("DebugCreate failed\n");
-    return;
+    return hr;
   }
-  sDebugClient->QueryInterface(__uuidof(IDebugControl4),
-                               (void**)&sDebugControl);
-  if (!sDebugControl) {
-    dprintf("QueryInterface(IDebugControl4) failed\n");
-    return;
-  }
-  hr = sDebugControl->IsPointer64Bit();
-  if (hr == S_OK) {
-    sPointerWidth = 8;
-  }
-  sDebugClient->QueryInterface(__uuidof(IDebugAdvanced3),
-                               (void**)&sDebugAdvanced);
-  if (!sDebugAdvanced) {
-    dprintf("QueryInterface(IDebugAdvanced3) failed\n");
-    return;
-  }
-  sDebugClient->QueryInterface(__uuidof(IDebugSymbols3),
-                               (void**)&sDebugSymbols);
-  if (!sDebugSymbols) {
-    dprintf("QueryInterface(IDebugSymbols3) failed\n");
-    return;
-  }
-  sDebugClient->QueryInterface(__uuidof(IDebugDataSpaces4),
-                               (void**)&sDebugDataSpaces);
-  if (!sDebugDataSpaces) {
-    dprintf("QueryInterface(IDebugDataSpaces4) failed\n");
-    return;
-  }
-}
 
-extern "C" __declspec(dllexport) LPEXT_API_VERSION
-ExtensionApiVersion(void)
-{
-  return &sExtApiVersion;
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugControl4),
+                                    (void**)&gDebugControl);
+  if (!gDebugControl) {
+    dprintf("QueryInterface(IDebugControl4) failed\n");
+    return hr;
+  }
+
+  ExtensionApis.nSize = sizeof(ExtensionApis);
+  hr = gDebugControl->GetWindbgExtensionApis64(&ExtensionApis);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  hr = gDebugControl->IsPointer64Bit();
+  if (hr == S_OK) {
+    gPointerWidth = 8;
+  }
+
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugAdvanced3),
+                                    (void**)&gDebugAdvanced);
+  if (!gDebugAdvanced) {
+    dprintf("QueryInterface(IDebugAdvanced3) failed\n");
+    return hr;
+  }
+
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugSymbols3),
+                                    (void**)&gDebugSymbols);
+  if (!gDebugSymbols) {
+    dprintf("QueryInterface(IDebugSymbols3) failed\n");
+    return hr;
+  }
+
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugDataSpaces4),
+                                    (void**)&gDebugDataSpaces);
+  if (!gDebugDataSpaces) {
+    dprintf("QueryInterface(IDebugDataSpaces4) failed\n");
+    return hr;
+  }
+
+  return S_OK;
 }
 

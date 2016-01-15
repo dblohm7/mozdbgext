@@ -2,12 +2,12 @@
 #include <stddef.h> // for offsetof
 
 /*
-#define DECLARE_API32(s)                           \
+#define DECLARE_API(s)                             \
     CPPMOD VOID                                    \
     s(                                             \
         HANDLE                 hCurrentProcess,    \
         HANDLE                 hCurrentThread,     \
-        ULONG                  dwCurrentPc,        \
+        ULONG64                dwCurrentPc,        \
         ULONG                  dwProcessor,        \
         PCSTR                  args                \
      )

@@ -1,0 +1,3 @@
+LIBRARY mozdbgext
+EXPORTS
+  KnownStructOutput

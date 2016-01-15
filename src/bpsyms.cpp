@@ -4,6 +4,7 @@
 #include <pathcch.h>
 #include <winnt.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <ios>
@@ -19,6 +20,13 @@ struct IMAGE_DEBUG_INFO_CODEVIEW
   GUID  mGuid;
   DWORD mAge;
   char  mPath[1];
+};
+
+enum SymbolType
+{
+  eFunctionSymbol,
+  ePublicSymbol,
+  eLineSymbol
 };
 
 static std::wstring
@@ -119,6 +127,14 @@ GetDebugInfoUniqueId(ULONG64 aBase, std::wstring& aId, std::wstring& aPdbName)
       return true;
     }
   }
+  wchar_t modNameBuf[64];
+  hr = gDebugSymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE,
+                                              DEBUG_ANY_ID, aBase,
+                                              modNameBuf, 64, nullptr);
+  if (SUCCEEDED(hr)) {
+    dprintf("Warning: No PDB reference found inside module \"%S\"\n",
+            modNameBuf);
+  }
   return false;
 }
 
@@ -164,8 +180,9 @@ startswith(const char* aBuf, const char (&aLiteral)[N])
 
 static const size_t kSymBufLen = 0x1000000; // 16MB
 
+template <typename CallbackT>
 static void
-LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath)
+LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath, CallbackT&& aCb)
 {
   auto buffer = std::make_unique<char[]>(kSymBufLen);
   std::ifstream i(aSymPath);
@@ -181,9 +198,8 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath)
     return;
   }
   i.rdbuf()->pubsetbuf(buffer.get(), kSymBufLen);
-#if defined(INCLUDE_LINE_SYMBOLS)
   std::unordered_map<ULONG64,std::string> fileMap;
-#endif // defined(INCLUDE_LINE_SYMBOLS)
+  std::string moduleName;
   char buf[1024] = {0};
   HRESULT hr;
   while (true) {
@@ -198,6 +214,12 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath)
     }
     if (startswith(buf, "MODULE ")) {
       auto tokens = split(std::string(buf, lineLen), ' ', 5);
+      moduleName = tokens[4];
+      std::string::size_type pos = moduleName.find_last_of('.');
+      // chop off any extension
+      if (pos != std::string::npos) {
+        moduleName.erase(moduleName.begin() + pos, moduleName.end());
+      }
     } else if (startswith(buf, "FUNC ")) {
       auto tokens = split(std::string(buf, lineLen), ' ', 5);
       std::istringstream issAddress(tokens[1]);
@@ -205,33 +227,20 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath)
       ULONG64 address, size;
       issAddress >> std::hex >> address;
       issSize >> std::hex >> size;
-      hr = gDebugSymbols->AddSyntheticSymbol(aBase + address, size,
-                                             tokens[4].c_str(),
-                                             DEBUG_ADDSYNTHSYM_DEFAULT, nullptr);
-      if (FAILED(hr)) {
-        dprintf("Failed to add synthetic symbol for \"%s\", hr 0x%08X\n",
-                tokens[4].c_str(), hr);
-      }
+      aCb(eFunctionSymbol, aBase + address, size, moduleName, tokens[4]);
     } else if(startswith(buf, "PUBLIC ")) {
       auto tokens = split(std::string(buf, lineLen), ' ', 4);
       std::istringstream issAddress(tokens[1]);
       ULONG64 address;
       issAddress >> std::hex >> address;
-      hr = gDebugSymbols->AddSyntheticSymbol(aBase + address, 0,
-                                             tokens[3].c_str(),
-                                             DEBUG_ADDSYNTHSYM_DEFAULT, nullptr);
-      if (FAILED(hr)) {
-        dprintf("Failed to add synthetic symbol for \"%s\", hr 0x%08X\n",
-                tokens[3].c_str(), hr);
-      }
-#if defined(INCLUDE_LINE_SYMBOLS)
+      aCb(ePublicSymbol, aBase + address, 0, moduleName, tokens[3]);
     } else if (startswith(buf, "FILE ")) {
       auto tokens = split(std::string(buf, lineLen), ' ', 3);
       std::istringstream issFileId(tokens[1]);
       ULONG64 fileId;
       issFileId >> std::dec >> fileId;
       fileMap[fileId] = tokens[2];
-    } else if (std::isxdigit(buf[0])) {
+    } else if (std::isxdigit(buf[0], std::locale::classic())) {
       // line record
       auto tokens = split(std::string(buf, lineLen), ' ', 4);
       std::istringstream issAddress(tokens[0]);
@@ -244,27 +253,21 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath)
       issLine >> std::dec >> lineNo;
       issFileId >> std::dec >> fileId;
       std::ostringstream ossSymName;
-      ossSymName << fileMap[fileId] << ":" << lineNo;
+      ossSymName << fileMap[fileId] << " @ " << lineNo;
       std::string symName(ossSymName.str());
-      hr = gDebugSymbols->AddSyntheticSymbol(aBase + address, size,
-                                             symName.c_str(),
-                                             DEBUG_ADDSYNTHSYM_DEFAULT, nullptr);
-      if (FAILED(hr)) {
-        dprintf("Failed to add synthetic symbol for \"%s\", hr 0x%08X\n",
-                symName.c_str(), hr);
-      }
-#endif // defined(INCLUDE_LINE_SYMBOLS)
+      aCb(eLineSymbol, aBase + address, size, moduleName, symName);
     }
   }
 }
 
+template <typename CallbackT>
 static bool
-LoadBpSymbols(const std::wstring& aBasePdbPath, const ULONG64 aBase)
+LoadBpSymbols(const std::wstring& aBasePdbPath, const ULONG64 aBase,
+              CallbackT&& aCb)
 {
   // Extract the unique ids for the pdb file from the module headers
   std::wstring uid, pdbFile;
   if (!GetDebugInfoUniqueId(aBase, uid, pdbFile)) {
-    dprintf("GetDebugInfoUniqueId failed\n");
     return false;
   }
   // Construct the breakpad symbol path
@@ -287,7 +290,7 @@ LoadBpSymbols(const std::wstring& aBasePdbPath, const ULONG64 aBase)
     return false;
   }
   // Load the actual breakpad symbols
-  LoadBpSymbolFile(aBase, pdbPath);
+  LoadBpSymbolFile(aBase, pdbPath, aCb);
   return true;
 }
 
@@ -322,7 +325,9 @@ private:
 
 } // anonymous namespace
 
-DECLARE_API(__declspec(dllexport) loadbpsyms)
+template <typename CallbackT>
+static void
+LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
 {
   DisableStdioSync stdioSyncDisabled;
 
@@ -332,11 +337,11 @@ DECLARE_API(__declspec(dllexport) loadbpsyms)
     return;
   }
 
-  // args should contain the base path to the bp symbols
-  DWORD attrs = GetFileAttributesA(args);
+  // aPath should contain the base path to the bp symbols
+  DWORD attrs = GetFileAttributesA(aPath);
   if (attrs == INVALID_FILE_ATTRIBUTES ||
       (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-    dprintf("Error: \"%s\" is not a valid directory\n", args);
+    dprintf("Error: \"%s\" is not a valid directory\n", aPath);
     return;
   }
 
@@ -347,12 +352,15 @@ DECLARE_API(__declspec(dllexport) loadbpsyms)
     dprintf("GetNumberModules failed\n");
     return;
   }
+#if defined(DEBUG)
+  dprintf("Module count: %u loaded, %u unloaded\n", numLoaded, numUnloaded);
+#endif
 
   wchar_t basePdbPath[MAX_PATH + 1] = {0};
-  int convResult = MultiByteToWideChar(CP_ACP, 0, args, -1, basePdbPath,
+  int convResult = MultiByteToWideChar(CP_ACP, 0, aPath, -1, basePdbPath,
                                        MAX_PATH);
   if (!convResult) {
-    dprintf("Error converting \"%s\" to UTF16\n", args);
+    dprintf("Error converting \"%s\" to UTF16\n", aPath);
     return;
   }
   gBasePdbPath = basePdbPath;
@@ -365,13 +373,164 @@ DECLARE_API(__declspec(dllexport) loadbpsyms)
       dprintf("GetModuleByIndex(%u) failed\n", i);
       return;
     }
-    LoadBpSymbols(basePdbPath, base);
+    LoadBpSymbols(basePdbPath, base, aCb);
   }
 
   mozilla::DbgExtCallbacks::RegisterModuleEventListener(
-    [](PCWSTR aModName, ULONG64 aBaseAddress) {
-      LoadBpSymbols(gBasePdbPath, aBaseAddress);
+    [=](PCWSTR aModName, ULONG64 aBaseAddress) {
+      LoadBpSymbols(gBasePdbPath, aBaseAddress, aCb);
     }
   );
+}
+
+DECLARE_API(__declspec(dllexport) bpsynthsyms)
+{
+  LoadBpSymbolsForModules(args, [](SymbolType aType, ULONG64 aOffset,
+                                   ULONG aSize, std::string& aModuleName,
+                                   std::string& aName) -> void {
+      if (aType == eLineSymbol) {
+        return;
+      }
+      HRESULT hr = gDebugSymbols->AddSyntheticSymbol(aOffset, aSize,
+                                                     aName.c_str(),
+                                                     DEBUG_ADDSYNTHSYM_DEFAULT,
+                                                     nullptr);
+      if (FAILED(hr)) {
+        dprintf("Failed to add synthetic symbol for \"%s\", hr 0x%08X\n",
+                aName.c_str(), hr);
+      }
+    });
+}
+
+// 1) sort by offset to do symbol lookup;
+// 2) sort by name to do name lookup
+struct BpSymbolInfo
+{
+  BpSymbolInfo(ULONG64 aOffset, ULONG aSize, std::string& aModuleName,
+               std::string& aName)
+    : mOffset(aOffset)
+    , mSize(aSize)
+    , mModuleName(aModuleName)
+    , mName(aName)
+  {
+  }
+  explicit BpSymbolInfo(ULONG64 aOffset)
+    : mOffset(aOffset)
+    , mSize(0)
+  {
+  }
+  ULONG64     mOffset;
+  ULONG       mSize;
+  std::string mModuleName;
+  std::string mName;
+};
+
+std::vector<BpSymbolInfo> gSourceLineSyms;
+std::vector<BpSymbolInfo> gSymsByOffset;
+std::vector<BpSymbolInfo> gSymsByName;
+auto gOffsetPredicate = [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
+        return a.mOffset < b.mOffset;
+      };
+
+DECLARE_API(__declspec(dllexport) bploadsyms)
+{
+  LoadBpSymbolsForModules(args, [](SymbolType aType, ULONG64 aOffset,
+                                   ULONG aSize, std::string& aModuleName,
+                                   std::string& aName) -> void {
+      if (aType == eLineSymbol) {
+        gSourceLineSyms.emplace_back(aOffset, aSize, aModuleName, aName);
+        return;
+      }
+      gSymsByOffset.emplace_back(aOffset, aSize, aModuleName, aName);
+    });
+  std::sort(gSourceLineSyms.begin(), gSourceLineSyms.end(),
+            [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
+        return a.mOffset < b.mOffset;
+      });
+  gSymsByName = gSymsByOffset;
+  std::sort(gSymsByOffset.begin(), gSymsByOffset.end(),
+            [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
+        return a.mOffset < b.mOffset;
+      });
+  std::sort(gSymsByName.begin(), gSymsByName.end(),
+            [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
+        return a.mName < b.mName;
+      });
+}
+
+DECLARE_API(__declspec(dllexport) bpsyminfo)
+{
+  dprintf("%u breakpad symbols loaded\n%u source line symbols loaded",
+          gSymsByOffset.size(), gSourceLineSyms.size());
+}
+
+static const size_t kSymbolBufSize = 0x1000000;
+
+DECLARE_API(__declspec(dllexport) bpk)
+{
+  DisableStdioSync stdioSyncDisabled;
+
+  const size_t kMaxFrames = 256;
+  DEBUG_STACK_FRAME_EX frames[kMaxFrames];
+  ULONG framesFilled = 0;
+  HRESULT hr = gDebugControl->GetStackTraceEx(0, 0, 0, frames, kMaxFrames,
+                                              &framesFilled);
+  if (FAILED(hr)) {
+    dprintf("Failed to obtain stack trace\n");
+    return;
+  }
+
+#if defined(DEBUG)
+  dprintf("Debug engine trace:\n");
+  hr = gDebugControl->OutputStackTraceEx(DEBUG_OUTCTL_ALL_OTHER_CLIENTS,
+                                         frames, framesFilled,
+                                         DEBUG_STACK_FRAME_NUMBERS);
+  if (FAILED(hr)) {
+    dprintf("Failed to output stack trace\n");
+    return;
+  }
+  dprintf("\nBreakpad trace:\n");
+#endif
+
+  for (ULONG i = 0; i < framesFilled; ++i) {
+    auto& symbol = std::upper_bound(gSymsByOffset.begin(), gSymsByOffset.end(),
+                                    BpSymbolInfo(frames[i].InstructionOffset),
+                                    gOffsetPredicate);
+    if (symbol == gSymsByOffset.begin() || symbol == gSymsByOffset.end()) {
+      // Try to fall back to the symbol engine
+      ULONG64 displacement = 0;
+      auto buf = std::make_unique<char[]>(kSymbolBufSize);
+      ULONG bufSize = kSymbolBufSize;
+      hr = gDebugSymbols->GetNameByOffset(frames[i].InstructionOffset,
+                                          buf.get(), bufSize, &bufSize,
+                                          &displacement);
+      if (SUCCEEDED(hr)) {
+        dprintf("%02u %s+0x%x\n", frames[i].FrameNumber, buf.get(),
+                displacement);
+      } else {
+        dprintf("<No symbol found>\n");
+      }
+      continue;
+    }
+    // This returns the first value >, but if it's > then we actually want the
+    // one <= that address
+    --symbol;
+    auto& lineSymbol = std::upper_bound(gSourceLineSyms.begin(),
+                                        gSourceLineSyms.end(),
+                                        BpSymbolInfo(frames[i].InstructionOffset),
+                                        gOffsetPredicate);
+    std::string lineString;
+    if (lineSymbol != gSourceLineSyms.begin() &&
+        lineSymbol != gSourceLineSyms.end()) {
+      --lineSymbol;
+      lineString = " [";
+      lineString += lineSymbol->mName;
+      lineString += "]";
+    }
+    ULONG64 offsetFromSym = frames[i].InstructionOffset - symbol->mOffset;
+    dprintf("%02u %s!%s+0x%I64X%s\n", frames[i].FrameNumber,
+            symbol->mModuleName.c_str(), symbol->mName.c_str(),
+            offsetFromSym, lineString.c_str());
+  }
 }
 

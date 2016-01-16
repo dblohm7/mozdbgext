@@ -48,6 +48,24 @@ GenerateDebugInfoUniqueId(REFGUID aGuid, DWORD aAge)
   return oss.str();
 }
 
+template <typename NTHeaderT>
+static bool
+GetDataDirectory(const ULONG64 aBase, const ULONG64 aNtHeaderBase,
+                 ULONG64& aDbgBase, ULONG64& aDbgSize)
+{
+  NTHeaderT ntHeader;
+  HRESULT hr = gDebugDataSpaces->ReadVirtual(aNtHeaderBase, &ntHeader,
+                                             sizeof(ntHeader), nullptr);
+  if (FAILED(hr)) {
+    return false;
+  }
+  IMAGE_DATA_DIRECTORY& dbgDataDir =
+    ntHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+  aDbgBase = aBase + dbgDataDir.VirtualAddress;
+  aDbgSize = dbgDataDir.Size;
+  return true;
+}
+
 static bool
 GetDebugInfoUniqueId(ULONG64 aBase, std::wstring& aId, std::wstring& aPdbName)
 {
@@ -61,29 +79,15 @@ GetDebugInfoUniqueId(ULONG64 aBase, std::wstring& aId, std::wstring& aPdbName)
   ULONG64 dbgBase, dbgSize;
   ULONG64 ntBase = aBase + header.e_lfanew;
   if (gPointerWidth == 4) {
-    IMAGE_NT_HEADERS32 ntHeader;
-    hr = gDebugDataSpaces->ReadVirtual(ntBase, &ntHeader, sizeof(ntHeader),
-                                       nullptr);
-    if (FAILED(hr)) {
+    if (!GetDataDirectory<IMAGE_NT_HEADERS32>(aBase, ntBase, dbgBase, dbgSize)) {
       dprintf("Failed to read IMAGE_NT_HEADERS\n");
       return false;
     }
-    IMAGE_DATA_DIRECTORY& dbgDataDir =
-      ntHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-    dbgBase = aBase + dbgDataDir.VirtualAddress;
-    dbgSize = dbgDataDir.Size;
   } else {
-    IMAGE_NT_HEADERS64 ntHeader;
-    hr = gDebugDataSpaces->ReadVirtual(ntBase, &ntHeader, sizeof(ntHeader),
-                                       nullptr);
-    if (FAILED(hr)) {
+    if (!GetDataDirectory<IMAGE_NT_HEADERS64>(aBase, ntBase, dbgBase, dbgSize)) {
       dprintf("Failed to read IMAGE_NT_HEADERS\n");
       return false;
     }
-    IMAGE_DATA_DIRECTORY& dbgDataDir =
-      ntHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-    dbgBase = aBase + dbgDataDir.VirtualAddress;
-    dbgSize = dbgDataDir.Size;
   }
   ULONG numDataDirEntries = dbgSize / sizeof(IMAGE_DEBUG_DIRECTORY);
   auto dbgDir = std::make_unique<IMAGE_DEBUG_DIRECTORY[]>(numDataDirEntries);

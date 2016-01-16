@@ -431,6 +431,9 @@ std::vector<BpSymbolInfo> gSymsByName;
 auto gOffsetPredicate = [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
         return a.mOffset < b.mOffset;
       };
+auto gNamePredicate = [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
+        return a.mName < b.mName;
+      };
 
 DECLARE_API(__declspec(dllexport) bploadsyms)
 {
@@ -443,19 +446,10 @@ DECLARE_API(__declspec(dllexport) bploadsyms)
       }
       gSymsByOffset.emplace_back(aOffset, aSize, aModuleName, aName);
     });
-  std::sort(gSourceLineSyms.begin(), gSourceLineSyms.end(),
-            [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
-        return a.mOffset < b.mOffset;
-      });
+  std::sort(gSourceLineSyms.begin(), gSourceLineSyms.end(), gOffsetPredicate);
   gSymsByName = gSymsByOffset;
-  std::sort(gSymsByOffset.begin(), gSymsByOffset.end(),
-            [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
-        return a.mOffset < b.mOffset;
-      });
-  std::sort(gSymsByName.begin(), gSymsByName.end(),
-            [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
-        return a.mName < b.mName;
-      });
+  std::sort(gSymsByOffset.begin(), gSymsByOffset.end(), gOffsetPredicate);
+  std::sort(gSymsByName.begin(), gSymsByName.end(), gNamePredicate);
 }
 
 DECLARE_API(__declspec(dllexport) bpsyminfo)
@@ -466,10 +460,56 @@ DECLARE_API(__declspec(dllexport) bpsyminfo)
 
 static const size_t kSymbolBufSize = 0x1000000;
 
+enum NearestSymbolFlags
+{
+  eIncludeLineNumbers
+};
+
+static bool
+NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG aFlags = 0)
+{
+  aOutput.clear();
+  std::ostringstream oss;
+  auto& symbol = std::upper_bound(gSymsByOffset.begin(), gSymsByOffset.end(),
+                                  BpSymbolInfo(aOffset), gOffsetPredicate);
+  if (symbol == gSymsByOffset.begin() || symbol == gSymsByOffset.end()) {
+    // Try to fall back to the symbol engine
+    ULONG64 displacement = 0;
+    auto buf = std::make_unique<char[]>(kSymbolBufSize);
+    ULONG bufSize = kSymbolBufSize;
+    HRESULT hr = gDebugSymbols->GetNameByOffset(aOffset, buf.get(), bufSize,
+                                                &bufSize, &displacement);
+    if (FAILED(hr)) {
+      return false;
+    }
+    // TODO: Get line numbers if eIncludeLineNumbers is set
+    oss << buf.get() << "+0x" << std::hex << displacement;
+    aOutput = oss.str();
+    return true;
+  }
+  // This returns the first value >, but if it's > then we actually want the
+  // one <= that address
+  --symbol;
+  ULONG64 offsetFromSym = aOffset - symbol->mOffset;
+  oss << symbol->mModuleName << "!" << symbol->mName << "+0x"
+      << std::hex << offsetFromSym;
+  if (aFlags & eIncludeLineNumbers) {
+    auto& lineSymbol = std::upper_bound(gSourceLineSyms.begin(),
+                                        gSourceLineSyms.end(),
+                                        BpSymbolInfo(aOffset),
+                                        gOffsetPredicate);
+    if (lineSymbol != gSourceLineSyms.begin() &&
+        lineSymbol != gSourceLineSyms.end()) {
+      --lineSymbol;
+      oss << " [" << lineSymbol->mName << "]";
+    }
+  }
+  aOutput = oss.str();
+  return true;
+}
+
 DECLARE_API(__declspec(dllexport) bpk)
 {
-  DisableStdioSync stdioSyncDisabled;
-
   const size_t kMaxFrames = 256;
   DEBUG_STACK_FRAME_EX frames[kMaxFrames];
   ULONG framesFilled = 0;
@@ -493,44 +533,11 @@ DECLARE_API(__declspec(dllexport) bpk)
 #endif
 
   for (ULONG i = 0; i < framesFilled; ++i) {
-    auto& symbol = std::upper_bound(gSymsByOffset.begin(), gSymsByOffset.end(),
-                                    BpSymbolInfo(frames[i].InstructionOffset),
-                                    gOffsetPredicate);
-    if (symbol == gSymsByOffset.begin() || symbol == gSymsByOffset.end()) {
-      // Try to fall back to the symbol engine
-      ULONG64 displacement = 0;
-      auto buf = std::make_unique<char[]>(kSymbolBufSize);
-      ULONG bufSize = kSymbolBufSize;
-      hr = gDebugSymbols->GetNameByOffset(frames[i].InstructionOffset,
-                                          buf.get(), bufSize, &bufSize,
-                                          &displacement);
-      if (SUCCEEDED(hr)) {
-        dprintf("%02u %s+0x%x\n", frames[i].FrameNumber, buf.get(),
-                displacement);
-      } else {
-        dprintf("<No symbol found>\n");
-      }
-      continue;
+    std::string symName;
+    if (!NearestSymbol(frames[i].InstructionOffset, symName)) {
+      symName = "<No symbol found>";
     }
-    // This returns the first value >, but if it's > then we actually want the
-    // one <= that address
-    --symbol;
-    auto& lineSymbol = std::upper_bound(gSourceLineSyms.begin(),
-                                        gSourceLineSyms.end(),
-                                        BpSymbolInfo(frames[i].InstructionOffset),
-                                        gOffsetPredicate);
-    std::string lineString;
-    if (lineSymbol != gSourceLineSyms.begin() &&
-        lineSymbol != gSourceLineSyms.end()) {
-      --lineSymbol;
-      lineString = " [";
-      lineString += lineSymbol->mName;
-      lineString += "]";
-    }
-    ULONG64 offsetFromSym = frames[i].InstructionOffset - symbol->mOffset;
-    dprintf("%02u %s!%s+0x%I64X%s\n", frames[i].FrameNumber,
-            symbol->mModuleName.c_str(), symbol->mName.c_str(),
-            offsetFromSym, lineString.c_str());
+    dprintf("%02u %s\n", frames[i].FrameNumber, symName.c_str());
   }
 }
 

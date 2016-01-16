@@ -1,3 +1,9 @@
 LIBRARY mozdbgext
 EXPORTS
+  DebugExtensionInitialize
   KnownStructOutput
+  bpk
+  bploadsyms
+  bpsyminfo
+  bpsynthsyms
+  mozmutex

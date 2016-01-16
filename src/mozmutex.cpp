@@ -1,18 +1,6 @@
 #include "mozdbgext.h"
 #include <stddef.h> // for offsetof
 
-/*
-#define DECLARE_API(s)                             \
-    CPPMOD VOID                                    \
-    s(                                             \
-        HANDLE                 hCurrentProcess,    \
-        HANDLE                 hCurrentThread,     \
-        ULONG64                dwCurrentPc,        \
-        ULONG                  dwProcessor,        \
-        PCSTR                  args                \
-     )
-*/
-
 namespace {
 
 const char sStackTraceDatabaseSymbolName[] = "ntdll!RtlpStackTraceDataBase";
@@ -157,13 +145,14 @@ const char sSymbolName[] = "ntdll!RtlCriticalSectionList";
 
 } // anonymous namespace
 
-DECLARE_API(__declspec(dllexport) mozmutex)
+HRESULT CALLBACK
+mozmutex(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
   ULONG64 csListOffset = 0;
   HRESULT hr = gDebugSymbols->GetOffsetByName(sSymbolName, &csListOffset);
   if (FAILED(hr)) {
     dprintf("GetOffsetByName failed\n");
-    return;
+    return E_FAIL;
   }
   const size_t linkOffset = offsetof(RTL_CRITICAL_SECTION_DEBUG,
                                      ProcessLocksList);
@@ -173,7 +162,7 @@ DECLARE_API(__declspec(dllexport) mozmutex)
                                      sizeof(csListHead), &bytesRead);
   if (FAILED(hr)) {
     dprintf("ReadVirtual of %s failed\n", sSymbolName);
-    return;
+    return E_FAIL;
   }
 
   ULONG64 offset = (ULONG64) csListHead.Flink;
@@ -184,7 +173,7 @@ DECLARE_API(__declspec(dllexport) mozmutex)
                                        &bytesRead);
     if (FAILED(hr)) {
       dprintf("ReadVirtual failed\n");
-      return;
+      return E_FAIL;
     }
     dprintf("CRITICAL_SECTION found at 0x%p\n", csDebug.CriticalSection);
     QueryStackTraceDatabase(csDebug.CreatorBackTraceIndexHigh,
@@ -206,5 +195,6 @@ DECLARE_API(__declspec(dllexport) mozmutex)
     */
     offset = (ULONG64) csDebug.ProcessLocksList.Flink;
   }
+  return S_OK;
 }
 

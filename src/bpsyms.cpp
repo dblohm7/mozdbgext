@@ -387,11 +387,12 @@ LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
   );
 }
 
-DECLARE_API(__declspec(dllexport) bpsynthsyms)
+HRESULT CALLBACK
+bpsynthsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
-  LoadBpSymbolsForModules(args, [](SymbolType aType, ULONG64 aOffset,
-                                   ULONG aSize, std::string& aModuleName,
-                                   std::string& aName) -> void {
+  LoadBpSymbolsForModules(aArgs, [](SymbolType aType, ULONG64 aOffset,
+                                    ULONG aSize, std::string& aModuleName,
+                                    std::string& aName) -> void {
       if (aType == eLineSymbol) {
         return;
       }
@@ -404,7 +405,10 @@ DECLARE_API(__declspec(dllexport) bpsynthsyms)
                 aName.c_str(), hr);
       }
     });
+  return S_OK;
 }
+
+namespace {
 
 // 1) sort by offset to do symbol lookup;
 // 2) sort by name to do name lookup
@@ -439,11 +443,14 @@ auto gNamePredicate = [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
         return a.mName < b.mName;
       };
 
-DECLARE_API(__declspec(dllexport) bploadsyms)
+} // anonymous namespace
+
+HRESULT CALLBACK
+bploadsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
-  LoadBpSymbolsForModules(args, [](SymbolType aType, ULONG64 aOffset,
-                                   ULONG aSize, std::string& aModuleName,
-                                   std::string& aName) -> void {
+  LoadBpSymbolsForModules(aArgs, [](SymbolType aType, ULONG64 aOffset,
+                                    ULONG aSize, std::string& aModuleName,
+                                    std::string& aName) -> void {
       if (aType == eLineSymbol) {
         gSourceLineSyms.emplace_back(aOffset, aSize, aModuleName, aName);
         return;
@@ -454,12 +461,15 @@ DECLARE_API(__declspec(dllexport) bploadsyms)
   gSymsByName = gSymsByOffset;
   std::sort(gSymsByOffset.begin(), gSymsByOffset.end(), gOffsetPredicate);
   std::sort(gSymsByName.begin(), gSymsByName.end(), gNamePredicate);
+  return S_OK;
 }
 
-DECLARE_API(__declspec(dllexport) bpsyminfo)
+HRESULT CALLBACK
+bpsyminfo(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
   dprintf("%u breakpad symbols loaded\n%u source line symbols loaded",
           gSymsByOffset.size(), gSourceLineSyms.size());
+  return S_OK;
 }
 
 static const size_t kSymbolBufSize = 0x1000000;
@@ -512,7 +522,8 @@ NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG aFlags = 0)
   return true;
 }
 
-DECLARE_API(__declspec(dllexport) bpk)
+HRESULT CALLBACK
+bpk(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
   const size_t kMaxFrames = 256;
   DEBUG_STACK_FRAME_EX frames[kMaxFrames];
@@ -521,7 +532,7 @@ DECLARE_API(__declspec(dllexport) bpk)
                                               &framesFilled);
   if (FAILED(hr)) {
     dprintf("Failed to obtain stack trace\n");
-    return;
+    return E_FAIL;
   }
 
 #if defined(DEBUG)
@@ -531,7 +542,7 @@ DECLARE_API(__declspec(dllexport) bpk)
                                          DEBUG_STACK_FRAME_NUMBERS);
   if (FAILED(hr)) {
     dprintf("Failed to output stack trace\n");
-    return;
+    return E_FAIL;
   }
   dprintf("\nBreakpad trace:\n");
 #endif
@@ -543,5 +554,6 @@ DECLARE_API(__declspec(dllexport) bpk)
     }
     dprintf("%02u %s\n", frames[i].FrameNumber, symName.c_str());
   }
+  return S_OK;
 }
 

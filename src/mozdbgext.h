@@ -6,7 +6,10 @@
 #include <comdef.h>
 #include "dbgeng.h"
 #include "dbghelp.h"
-#include "wdbgexts.h"
+
+#define dprintf(fmt, ...) \
+  gDebugControl->ControlledOutput(DEBUG_OUTCTL_ALL_OTHER_CLIENTS, DEBUG_OUTPUT_NORMAL, fmt, __VA_ARGS__)
+
 
 _COM_SMARTPTR_TYPEDEF(IDebugClient5, __uuidof(IDebugClient5));
 _COM_SMARTPTR_TYPEDEF(IDebugControl7, __uuidof(IDebugControl7));

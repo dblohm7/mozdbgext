@@ -1,11 +1,13 @@
 #include "mozdbgext.h"
 
-static char sNames[] = "nsString\0nsCString\0nsAutoString\0nsAutoCString\0nsAString\0nsACString\0";
+static char sNames[] = "\0";
 
 static bool
 GetNames(PSTR aBuffer, PULONG aBufferSize)
 {
+#if defined(DEBUG)
   dprintf("GetNames\n");
+#endif
   if (*aBufferSize < sizeof(sNames)) {
     return false;
   }
@@ -17,7 +19,9 @@ GetNames(PSTR aBuffer, PULONG aBufferSize)
 static bool
 SuppressTypeName(PSTR aStructName)
 {
+#if defined(DEBUG)
   dprintf("Suppress type name \"%s\"\n", aStructName);
+#endif
   return false;
 }
 
@@ -25,15 +29,19 @@ static HRESULT
 GetRepresentation(ULONG64 aAddress, PSTR aStructName, PSTR aBuffer,
                   PULONG aBufferSize)
 {
+#if defined(DEBUG)
   dprintf("Get representation \"%s\"\n", aStructName);
-  return E_FAIL;
+#endif
+  return E_NOTIMPL;
 }
 
-extern "C" HRESULT CALLBACK
+HRESULT CALLBACK
 KnownStructOutput(ULONG aFlag, ULONG64 aAddress, PSTR aStructName, PSTR aBuffer,
                   PULONG aBufferSize)
 {
+#if defined(DEBUG)
   dprintf("KnownStructOutput\n");
+#endif
   switch (aFlag) {
     case DEBUG_KNOWN_STRUCT_GET_NAMES:
       if (!aBuffer || !aBufferSize) {

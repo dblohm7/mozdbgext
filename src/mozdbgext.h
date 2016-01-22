@@ -7,9 +7,7 @@
 #include "dbgeng.h"
 #include "dbghelp.h"
 
-#define dprintf(fmt, ...) \
-  gDebugControl->ControlledOutput(DEBUG_OUTCTL_ALL_OTHER_CLIENTS, DEBUG_OUTPUT_NORMAL, fmt, __VA_ARGS__)
-
+#include <utility>
 
 _COM_SMARTPTR_TYPEDEF(IDebugClient5, __uuidof(IDebugClient5));
 _COM_SMARTPTR_TYPEDEF(IDebugControl7, __uuidof(IDebugControl7));
@@ -23,6 +21,65 @@ extern IDebugAdvanced3Ptr   gDebugAdvanced;
 extern IDebugSymbols3Ptr    gDebugSymbols;
 extern IDebugDataSpaces4Ptr gDebugDataSpaces;
 extern ULONG                gPointerWidth;
+
+namespace detail {
+
+template <typename CharType>
+class DebugOutput
+{
+public:
+
+  template<typename... Args>
+  static inline HRESULT
+  dvprintf(ULONG aOutputControl, ULONG aMask, CharType* aFmt, Args&&... aArgs);
+};
+
+template <>
+class DebugOutput<const char>
+{
+public:
+  template <typename... Args>
+  static inline HRESULT
+  dvprintf(ULONG aOutputControl, ULONG aMask, const char* aFmt, Args&&... aArgs)
+  {
+    return gDebugControl->ControlledOutput(aOutputControl, aMask, aFmt,
+                                           std::forward<Args>(aArgs)...);
+  }
+};
+
+template <>
+class DebugOutput<const wchar_t>
+{
+public:
+  template <typename... Args>
+  static inline HRESULT
+  dvprintf(ULONG aOutputControl, ULONG aMask, const wchar_t* aFmt,
+           Args&&... aArgs)
+  {
+    return gDebugControl->ControlledOutputWide(aOutputControl, aMask, aFmt,
+                                               std::forward<Args>(aArgs)...);
+  }
+};
+
+} // namespace detail
+
+template <typename CharType, typename... Args>
+inline HRESULT
+dprintf(CharType* aFmt, Args&&... aArgs)
+{
+  return detail::DebugOutput<CharType>::dvprintf(DEBUG_OUTCTL_ALL_OTHER_CLIENTS,
+                                                 DEBUG_OUTPUT_NORMAL, aFmt,
+                                                 std::forward<Args>(aArgs)...);
+}
+
+template <typename CharType, typename... Args>
+inline HRESULT
+dmlprintf(CharType* aFmt, Args&&... aArgs)
+{
+  return detail::DebugOutput<CharType>::dvprintf(
+      DEBUG_OUTCTL_ALL_OTHER_CLIENTS | DEBUG_OUTCTL_DML, DEBUG_OUTPUT_NORMAL,
+      aFmt, std::forward<Args>(aArgs)...);
+}
 
 #endif // __MOZDBGEXT_H
 

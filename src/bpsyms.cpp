@@ -472,7 +472,6 @@ LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
         }
       }
       LoadBpSymbols(gBasePdbPath, aBaseAddress, aCb);
-      PostLoadProcessSymData();
     }
   );
 }
@@ -543,27 +542,8 @@ struct BpSymbolInfo
   ULONG64     mNameInt;
 };
 
-std::vector<BpSymbolInfo> gSourceLineSyms;
-std::vector<BpSymbolInfo> gSymsByOffset;
-std::vector<BpSymbolInfo> gSymsByName;
-auto gOffsetPredicate = [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
-        return a.mOffset < b.mOffset;
-      };
-auto gNamePredicate = [](const BpSymbolInfo& a, const BpSymbolInfo& b) -> bool {
-        return a.mName < b.mName;
-      };
-
-void
-PostLoadProcessSymData()
-{
-  std::sort(gSourceLineSyms.begin(), gSourceLineSyms.end(), gOffsetPredicate);
-  gSymsByName = gSymsByOffset;
-  std::sort(gSymsByOffset.begin(), gSymsByOffset.end(), gOffsetPredicate);
-  std::sort(gSymsByName.begin(), gSymsByName.end(), gNamePredicate);
-  gSourceLineSyms.shrink_to_fit();
-  gSymsByOffset.shrink_to_fit();
-  gSymsByName.shrink_to_fit();
-}
+std::map<UINT64,BpSymbolInfo> gSourceLineSyms;
+std::map<UINT64,BpSymbolInfo> gSymsByOffset;
 
 } // anonymous namespace
 
@@ -576,13 +556,18 @@ bploadsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
                                     ULONG64 aFileId, ULONG64 aNameInt)
                                       -> void {
       if (aType == eLineSymbol) {
-        gSourceLineSyms.emplace_back(aOffset, aSize, aModuleBase, aFileId,
-                                     aNameInt);
+        gSourceLineSyms.emplace(std::piecewise_construct,
+                                std::forward_as_tuple(aOffset),
+                                std::forward_as_tuple(aOffset, aSize,
+                                                      aModuleBase, aFileId,
+                                                      aNameInt));
         return;
       }
-      gSymsByOffset.emplace_back(aOffset, aSize, aModuleBase, aName, aParams);
+      gSymsByOffset.emplace(std::piecewise_construct,
+                            std::forward_as_tuple(aOffset),
+                            std::forward_as_tuple(aOffset, aSize, aModuleBase,
+                                                  aName, aParams));
     });
-  PostLoadProcessSymData();
   return S_OK;
 }
 
@@ -635,8 +620,7 @@ NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG64& aOutSymOffset,
 {
   aOutput.clear();
   std::ostringstream oss;
-  auto& symbol = std::upper_bound(gSymsByOffset.begin(), gSymsByOffset.end(),
-                                  BpSymbolInfo(aOffset), gOffsetPredicate);
+  auto& symbol = gSymsByOffset.upper_bound(aOffset);
   if (symbol == gSymsByOffset.begin() || symbol == gSymsByOffset.end()) {
     // Try to fall back to the symbol engine
     ULONG64 displacement = 0;
@@ -658,7 +642,7 @@ NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG64& aOutSymOffset,
   // This returns the first value >, but if it's > then we actually want the
   // one <= that address
   --symbol;
-  aOutSymOffset = symbol->mOffset;
+  aOutSymOffset = symbol->second.mOffset;
 
   auto& module = gModuleInfo.upper_bound(aOffset);
   if (module == gModuleInfo.end()) {
@@ -675,14 +659,15 @@ NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG64& aOutSymOffset,
 
   // We're going to output DML, so we need to escape any angle brackets in
   // the symbol name
-  std::string symName(symbol->mName);
+  std::string symName(symbol->second.mName);
   if (aFlags & eDMLOutput) {
     ConvertToDml(symName);
   }
 
-  auto& curModuleInfo = gModuleInfo.find(symbol->mModuleBase);
+  auto& curModuleInfo = gModuleInfo.find(symbol->second.mModuleBase);
   if (curModuleInfo == gModuleInfo.end()) {
-    dprintf("Error: ModuleInfo for base 0x%p not found\n", symbol->mModuleBase);
+    dprintf("Error: ModuleInfo for base 0x%p not found\n",
+            symbol->second.mModuleBase);
     return false;
   }
   std::string moduleName(curModuleInfo->second.mName);
@@ -691,19 +676,16 @@ NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG64& aOutSymOffset,
   }
   const auto& fileMap = curModuleInfo->second.mFileMap;
 
-  ULONG64 offsetFromSym = aOffset - symbol->mOffset;
+  ULONG64 offsetFromSym = aOffset - symbol->second.mOffset;
   oss << moduleName << "!" << symName << "+0x"
       << std::hex << offsetFromSym << std::flush;
   if ((aFlags & eIncludeLineNumbers) == eIncludeLineNumbers) {
-    auto& lineSymbol = std::upper_bound(gSourceLineSyms.begin(),
-                                        gSourceLineSyms.end(),
-                                        BpSymbolInfo(aOffset),
-                                        gOffsetPredicate);
+    auto& lineSymbol = gSourceLineSyms.upper_bound(aOffset);
     if (lineSymbol != gSourceLineSyms.begin() &&
         lineSymbol != gSourceLineSyms.end()) {
       --lineSymbol;
       // Look up the file name
-      auto& fileItr = fileMap.find(lineSymbol->mFileId);
+      auto& fileItr = fileMap.find(lineSymbol->second.mFileId);
       if (fileItr == fileMap.end()) {
         dprintf("Error: File id does not map to a valid file name\n");
         return false;
@@ -714,9 +696,9 @@ NearestSymbol(ULONG64 aOffset, std::string& aOutput, ULONG64& aOutSymOffset,
           << file
           << "</exec>"
           << " @ "
-          << "<exec cmd=\"!gotoline " << std::dec << lineSymbol->mNameInt
+          << "<exec cmd=\"!gotoline " << std::dec << lineSymbol->second.mNameInt
                                       << " " << file << "\">"
-          << std::dec << lineSymbol->mNameInt
+          << std::dec << lineSymbol->second.mNameInt
           << "</exec>]"
           << std::flush;
     }

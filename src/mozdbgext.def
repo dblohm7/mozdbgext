@@ -3,7 +3,9 @@ EXPORTS
   DebugExtensionInitialize
   KnownStructOutput
   bpk
+  bpln
   bploadsyms
   bpsyminfo
   bpsynthsyms
+  gotoline
   mozmutex

@@ -7,6 +7,8 @@
 #include "dbgeng.h"
 #include "dbghelp.h"
 
+#include <memory>
+#include <string>
 #include <utility>
 
 _COM_SMARTPTR_TYPEDEF(IDebugClient5, __uuidof(IDebugClient5));
@@ -79,6 +81,58 @@ dmlprintf(CharType* aFmt, Args&&... aArgs)
   return detail::DebugOutput<CharType>::dvprintf(
       DEBUG_OUTCTL_ALL_OTHER_CLIENTS | DEBUG_OUTCTL_DML, DEBUG_OUTPUT_NORMAL,
       aFmt, std::forward<Args>(aArgs)...);
+}
+
+template <typename CharType, typename... Args>
+inline HRESULT
+symprintf(CharType* aFmt, Args&&... aArgs)
+{
+  return detail::DebugOutput<CharType>::dvprintf(
+      DEBUG_OUTCTL_ALL_OTHER_CLIENTS,
+      DEBUG_OUTPUT_VERBOSE | DEBUG_OUTPUT_SYMBOLS,
+      aFmt, std::forward<Args>(aArgs)...);
+}
+
+inline bool
+ToUTF16(const std::string& aStr, std::wstring& aWideStr,
+        UINT aCodePage = CP_UTF8)
+{
+  int len = MultiByteToWideChar(aCodePage, 0, aStr.c_str(), aStr.length(),
+                                nullptr, 0);
+  if (!len) {
+    return false;
+  }
+  auto wideBuf = std::make_unique<wchar_t[]>(len);
+  len = MultiByteToWideChar(aCodePage, 0, aStr.c_str(), aStr.length(),
+                            wideBuf.get(), len);
+  if (!len) {
+    return false;
+  }
+  aWideStr = wideBuf.get();
+  return true;
+}
+
+inline bool
+ToChar(const std::wstring& aWideStr, std::string& aStr,
+       UINT aCodePage = CP_UTF8)
+{
+  int len = WideCharToMultiByte(aCodePage,
+                                WC_ERR_INVALID_CHARS | WC_NO_BEST_FIT_CHARS,
+                                aWideStr.c_str(), aWideStr.length(), nullptr,
+                                0, nullptr, nullptr);
+  if (!len) {
+    return false;
+  }
+  auto buf = std::make_unique<char[]>(len);
+  len = WideCharToMultiByte(aCodePage,
+                            WC_ERR_INVALID_CHARS | WC_NO_BEST_FIT_CHARS,
+                            aWideStr.c_str(), aWideStr.length(), buf.get(), len,
+                            nullptr, nullptr);
+  if (!len) {
+    return false;
+  }
+  aStr = buf.get();
+  return true;
 }
 
 #endif // __MOZDBGEXT_H

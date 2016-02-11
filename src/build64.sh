@@ -1,6 +1,6 @@
 #!/bin/bash
 DBGINC='C:\Program Files (x86)\Windows Kits\10\Debuggers\inc'
-DBGLIB='C:\Program Files (x86)\Windows Kits\10\Debuggers\lib\x86'
+DBGLIB='C:\Program Files (x86)\Windows Kits\10\Debuggers\lib\x64'
 SDKINC='C:\Program Files (x86)\Windows Kits\10\Include\10.0.10586.0\um;C:\Program Files (x86)\Windows Kits\10\Include\10.0.10586.0\shared'
 DDKINC='C:\\WinDDK\\7600.16385.1\\inc'
 INCLUDE="${DBGINC};${DDKINC};${SDKINC};${INCLUDE}"

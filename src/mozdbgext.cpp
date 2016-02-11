@@ -5,6 +5,7 @@ IDebugControl7Ptr     gDebugControl;
 IDebugAdvanced3Ptr    gDebugAdvanced;
 IDebugSymbols3Ptr     gDebugSymbols;
 IDebugDataSpaces4Ptr  gDebugDataSpaces;
+IDebugRegisters2Ptr   gDebugRegisters;
 ULONG                 gPointerWidth = 4; // Pointer width in bytes
 
 HRESULT
@@ -50,6 +51,13 @@ DebugExtensionInitialize(PULONG aVersion, PULONG aFlags)
                                     (void**)&gDebugDataSpaces);
   if (!gDebugDataSpaces) {
     dprintf("QueryInterface(IDebugDataSpaces4) failed\n");
+    return hr;
+  }
+
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugRegisters2),
+                                    (void**)&gDebugRegisters);
+  if (!gDebugRegisters) {
+    dprintf("QueryInterface(IDebugRegisters2) failed\n");
     return hr;
   }
 

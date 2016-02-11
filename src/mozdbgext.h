@@ -16,12 +16,14 @@ _COM_SMARTPTR_TYPEDEF(IDebugControl7, __uuidof(IDebugControl7));
 _COM_SMARTPTR_TYPEDEF(IDebugAdvanced3, __uuidof(IDebugAdvanced3));
 _COM_SMARTPTR_TYPEDEF(IDebugSymbols3, __uuidof(IDebugSymbols3));
 _COM_SMARTPTR_TYPEDEF(IDebugDataSpaces4, __uuidof(IDebugDataSpaces4));
+_COM_SMARTPTR_TYPEDEF(IDebugRegisters2, __uuidof(IDebugRegisters2));
 
 extern IDebugClient5Ptr     gDebugClient;
 extern IDebugControl7Ptr    gDebugControl;
 extern IDebugAdvanced3Ptr   gDebugAdvanced;
 extern IDebugSymbols3Ptr    gDebugSymbols;
 extern IDebugDataSpaces4Ptr gDebugDataSpaces;
+extern IDebugRegisters2Ptr  gDebugRegisters;
 extern ULONG                gPointerWidth;
 
 namespace detail {

@@ -8,4 +8,6 @@ EXPORTS
   bpsyminfo
   bpsynthsyms
   gotoline
+  iat
   mozmutex
+  params

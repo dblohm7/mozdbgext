@@ -72,17 +72,17 @@ WalkImageThunkData(ULONG64 const aModuleBase,
 HRESULT CALLBACK
 iat(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
-  // TODO: If arg starts with __imp__, resolve the symbol
-  std::istringstream iss(aArgs);
-  ULONG64 ptr;
-  iss >> std::hex >> ptr;
-  if (!iss) {
-    return E_FAIL;
+  // This doesn't evaluate breakpad
+  DEBUG_VALUE dv;
+  HRESULT hr = gDebugControl->Evaluate(aArgs, DEBUG_VALUE_INT64, &dv, nullptr);
+  if (FAILED(hr)) {
+    return hr;
   }
+  ULONG64 ptr = dv.I64;
   // Find the enclosing module
   ULONG moduleIndex;
   ULONG64 moduleBase;
-  HRESULT hr = gDebugSymbols->GetModuleByOffset(ptr, 0, &moduleIndex, &moduleBase);
+  hr = gDebugSymbols->GetModuleByOffset(ptr, 0, &moduleIndex, &moduleBase);
   if (FAILED(hr)) {
     return hr;
   }

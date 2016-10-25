@@ -1,0 +1,28 @@
+
+#ifdef DEBUG
+# CL_DEBUG_FLAGS+=-DDEBUG
+#else
+#ifdef OPTIMIZED
+#CL_OPT_FLAGS=-O2 -Oy- -DNDEBUG
+#endif
+#endif
+#CL_CRT_FLAG=@(CRT_FLAG)
+#ifdef DEBUG_CRT
+#CL_CRT_FLAG=-MTd
+#CL_DEBUG_FLAGS+=-D_DEBUG
+#else
+CL_CRT_FLAG=-MT
+#endif
+BITNESS=32
+LINK_MACHINE_ARCH=X86
+LIBS=dbgeng.lib pathcch.lib user32.lib
+
+OUTBASE=mozdbgext
+IMPLIBNAME=$(OUTBASE).lib
+PDBNAME=$(OUTBASE).pdb
+BINNAME=$(OUTBASE).dll
+DEFFILE=$(OUTBASE).def
+
+!cxx = |> cl -nologo -Zi -EHsc -DUNICODE -D_UNICODE $(CL_DEBUG_FLAGS) $(CL_OPT_FLAGS) $(CL_CRT_FLAG) -c %f -Fo%B.obj -Fd%B.pdb |> %B.obj | %B.pdb
+!link = |> link -nologo -MACHINE:$(LINK_MACHINE_ARCH) -DEBUG -DEF:../src/$(DEFFILE) -DLL -LARGEADDRESSAWARE -IMPLIB:$(BITNESS)/$(IMPLIBNAME) %f $(LIBS) -PDB:$(BITNESS)/$(PDBNAME) -OUT:$(BITNESS)/$(BINNAME) |> $(BITNESS)/$(BINNAME) $(BITNESS)/$(PDBNAME) $(BITNESS)/$(IMPLIBNAME) | $(BITNESS)/$(OUTBASE).ilk $(BITNESS)/$(OUTBASE).exp
+

@@ -17,14 +17,16 @@ _COM_SMARTPTR_TYPEDEF(IDebugAdvanced3, __uuidof(IDebugAdvanced3));
 _COM_SMARTPTR_TYPEDEF(IDebugSymbols3, __uuidof(IDebugSymbols3));
 _COM_SMARTPTR_TYPEDEF(IDebugDataSpaces4, __uuidof(IDebugDataSpaces4));
 _COM_SMARTPTR_TYPEDEF(IDebugRegisters2, __uuidof(IDebugRegisters2));
+_COM_SMARTPTR_TYPEDEF(IDebugSystemObjects4, __uuidof(IDebugSystemObjects4));
 
-extern IDebugClient5Ptr     gDebugClient;
-extern IDebugControl7Ptr    gDebugControl;
-extern IDebugAdvanced3Ptr   gDebugAdvanced;
-extern IDebugSymbols3Ptr    gDebugSymbols;
-extern IDebugDataSpaces4Ptr gDebugDataSpaces;
-extern IDebugRegisters2Ptr  gDebugRegisters;
-extern ULONG                gPointerWidth;
+extern IDebugClient5Ptr         gDebugClient;
+extern IDebugControl7Ptr        gDebugControl;
+extern IDebugAdvanced3Ptr       gDebugAdvanced;
+extern IDebugSymbols3Ptr        gDebugSymbols;
+extern IDebugDataSpaces4Ptr     gDebugDataSpaces;
+extern IDebugRegisters2Ptr      gDebugRegisters;
+extern IDebugSystemObjects4Ptr  gDebugSystemObjects;
+extern ULONG                    gPointerWidth;
 
 namespace detail {
 
@@ -97,7 +99,7 @@ symprintf(CharType* aFmt, Args&&... aArgs)
 
 inline bool
 ToUTF16(const std::string& aStr, std::wstring& aWideStr,
-        UINT aCodePage = CP_UTF8)
+        const UINT aCodePage = CP_UTF8)
 {
   int len = MultiByteToWideChar(aCodePage, 0, aStr.c_str(), aStr.length(),
                                 nullptr, 0);
@@ -110,13 +112,13 @@ ToUTF16(const std::string& aStr, std::wstring& aWideStr,
   if (!len) {
     return false;
   }
-  aWideStr = wideBuf.get();
+  aWideStr.assign(wideBuf.get(), len);
   return true;
 }
 
 inline bool
 ToChar(const std::wstring& aWideStr, std::string& aStr,
-       UINT aCodePage = CP_UTF8)
+       const UINT aCodePage = CP_UTF8)
 {
   int len = WideCharToMultiByte(aCodePage,
                                 WC_ERR_INVALID_CHARS | WC_NO_BEST_FIT_CHARS,
@@ -133,7 +135,7 @@ ToChar(const std::wstring& aWideStr, std::string& aStr,
   if (!len) {
     return false;
   }
-  aStr = buf.get();
+  aStr.assign(buf.get(), len);
   return true;
 }
 

@@ -40,17 +40,23 @@ public:
   STDMETHODIMP ChangeEngineState(ULONG aFlags, ULONG64 aArgument);
   STDMETHODIMP ChangeSymbolState(ULONG aFlags, ULONG64 aArgument);
 
-  typedef std::function<void (PCWSTR,ULONG64)> ModuleEventListenerFn;
+  typedef std::function<void (PCWSTR,ULONG64,bool)> ModuleEventListenerFn;
   static bool RegisterModuleEventListener(ModuleEventListenerFn aListener);
   static bool DeregisterModuleEventListener(ModuleEventListenerFn aListener);
+
+  typedef std::function<void (ULONG)> ProcessDetachListenerFn;
+  static bool RegisterProcessDetachListener(ProcessDetachListenerFn aListener);
+  static bool DeregisterProcessDetachListener(ProcessDetachListenerFn aListener);
 
 private:
   DbgExtCallbacks();
   virtual ~DbgExtCallbacks();
+  HRESULT EnumerateProcesses(std::vector<ULONG>& aPids);
 
   ULONG   mRefCnt;
 
   std::vector<ModuleEventListenerFn> mModuleEventListeners;
+  std::vector<ProcessDetachListenerFn> mProcessDetachListeners;
 
   static DbgExtCallbacks* sInstance;
 };

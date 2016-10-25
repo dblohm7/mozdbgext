@@ -1,0 +1,3 @@
+.gitignore
+include_rules
+: ../obj/*.obj | ../obj/*.pdb ../src/$(OUTBASE).def |> !link |>

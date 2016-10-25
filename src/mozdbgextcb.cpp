@@ -35,6 +35,33 @@ DbgExtCallbacks::DeregisterModuleEventListener(ModuleEventListenerFn aListener)
   return true;
 }
 
+bool
+DbgExtCallbacks::RegisterProcessDetachListener(ProcessDetachListenerFn aListener)
+{
+  if (!sInstance) {
+    sInstance = new DbgExtCallbacks();
+    HRESULT hr = gDebugClient->SetEventCallbacksWide(sInstance);
+    if (FAILED(hr)) {
+      delete sInstance;
+      sInstance = nullptr;
+      return false;
+    }
+  }
+  sInstance->mProcessDetachListeners.push_back(aListener);
+  return true;
+}
+
+bool
+DbgExtCallbacks::DeregisterProcessDetachListener(ProcessDetachListenerFn aListener)
+{
+  if (!sInstance) {
+    return false;
+  }
+  // No-op for now
+  // return sInstance->mProcessDetachListeners.erase(aListener) > 0;
+  return true;
+}
+
 DbgExtCallbacks::DbgExtCallbacks()
   : mRefCnt(1)
 {
@@ -88,7 +115,9 @@ DbgExtCallbacks::GetInterestMask(PULONG aMask)
   if (!aMask) {
     return E_INVALIDARG;
   }
-  *aMask = DEBUG_EVENT_LOAD_MODULE;
+  *aMask = DEBUG_EVENT_LOAD_MODULE | DEBUG_EVENT_UNLOAD_MODULE |
+           DEBUG_EVENT_EXIT_PROCESS | DEBUG_EVENT_SESSION_STATUS |
+           DEBUG_EVENT_CHANGE_ENGINE_STATE;
   return S_OK;
 }
 
@@ -131,7 +160,18 @@ DbgExtCallbacks::CreateProcess(ULONG64 aImageFileHandle, ULONG64 aHandle,
 STDMETHODIMP
 DbgExtCallbacks::ExitProcess(ULONG aExitCode)
 {
-  return E_NOTIMPL;
+  ULONG debuggerPid;
+  HRESULT hr = gDebugSystemObjects->GetEventProcess(&debuggerPid);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  std::for_each(mProcessDetachListeners.begin(),
+                mProcessDetachListeners.end(),
+                [&](ProcessDetachListenerFn fn) {
+    fn(debuggerPid);
+  });
+  return S_OK;
 }
 
 STDMETHODIMP
@@ -142,14 +182,21 @@ DbgExtCallbacks::LoadModule(ULONG64 aImageFileHandle, ULONG64 aBaseOffset,
 {
   std::for_each(mModuleEventListeners.begin(),
                 mModuleEventListeners.end(),
-                [&](ModuleEventListenerFn fn) { fn(aImageName, aBaseOffset); });
+                [&](ModuleEventListenerFn fn) {
+    fn(aImageName, aBaseOffset, true);
+  });
   return S_OK;
 }
 
 STDMETHODIMP
 DbgExtCallbacks::UnloadModule(PCWSTR aImageBaseName, ULONG64 aBaseOffset)
 {
-  return E_NOTIMPL;
+  std::for_each(mModuleEventListeners.begin(),
+                mModuleEventListeners.end(),
+                [&](ModuleEventListenerFn fn) {
+    fn(aImageBaseName, aBaseOffset, false);
+  });
+  return S_OK;
 }
 
 STDMETHODIMP
@@ -158,10 +205,49 @@ DbgExtCallbacks::SystemError(ULONG aError, ULONG aLevel)
   return E_NOTIMPL;
 }
 
+HRESULT
+DbgExtCallbacks::EnumerateProcesses(std::vector<ULONG>& aPids)
+{
+  aPids.clear();
+
+  ULONG numProcesses = 0;
+  HRESULT hr = gDebugSystemObjects->GetNumberProcesses(&numProcesses);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  aPids.resize(numProcesses);
+  hr = gDebugSystemObjects->GetProcessIdsByIndex(0, numProcesses, &aPids[0],
+                                                 nullptr);
+  if (FAILED(hr)) {
+    aPids.clear();
+    return hr;
+  }
+
+  return S_OK;
+}
+
 STDMETHODIMP
 DbgExtCallbacks::SessionStatus(ULONG aStatus)
 {
-  return E_NOTIMPL;
+  // We don't care about active sessions, only ending sessions
+  if (aStatus == DEBUG_SESSION_ACTIVE) {
+    return S_OK;
+  }
+
+  // All other values of aStatus imply that the session was ended.
+  ULONG debuggerPid;
+  HRESULT hr = gDebugSystemObjects->GetEventProcess(&debuggerPid);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  std::for_each(mProcessDetachListeners.begin(),
+                mProcessDetachListeners.end(),
+                [&](ProcessDetachListenerFn fn) {
+    fn(debuggerPid);
+  });
+  return S_OK;
 }
 
 STDMETHODIMP
@@ -173,7 +259,23 @@ DbgExtCallbacks::ChangeDebuggeeState(ULONG aFlags, ULONG64 aArgument)
 STDMETHODIMP
 DbgExtCallbacks::ChangeEngineState(ULONG aFlags, ULONG64 aArgument)
 {
-  return E_NOTIMPL;
+  // We only care when a target has been removed.
+  if (!(aFlags & DEBUG_CES_SYSTEMS) || aArgument != DEBUG_ANY_ID) {
+    return S_OK;
+  }
+
+  ULONG debuggerPid;
+  HRESULT hr = gDebugSystemObjects->GetEventProcess(&debuggerPid);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  std::for_each(mProcessDetachListeners.begin(),
+                mProcessDetachListeners.end(),
+                [&](ProcessDetachListenerFn fn) {
+    fn(debuggerPid);
+  });
+  return S_OK;
 }
 
 STDMETHODIMP

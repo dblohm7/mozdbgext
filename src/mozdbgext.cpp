@@ -1,12 +1,13 @@
 #include "mozdbgext.h"
 
-IDebugClient5Ptr      gDebugClient;
-IDebugControl7Ptr     gDebugControl;
-IDebugAdvanced3Ptr    gDebugAdvanced;
-IDebugSymbols3Ptr     gDebugSymbols;
-IDebugDataSpaces4Ptr  gDebugDataSpaces;
-IDebugRegisters2Ptr   gDebugRegisters;
-ULONG                 gPointerWidth = 4; // Pointer width in bytes
+IDebugClient5Ptr        gDebugClient;
+IDebugControl7Ptr       gDebugControl;
+IDebugAdvanced3Ptr      gDebugAdvanced;
+IDebugSymbols3Ptr       gDebugSymbols;
+IDebugDataSpaces4Ptr    gDebugDataSpaces;
+IDebugRegisters2Ptr     gDebugRegisters;
+IDebugSystemObjects4Ptr gDebugSystemObjects;
+ULONG                   gPointerWidth = 4; // Pointer width in bytes
 
 HRESULT
 DebugExtensionInitialize(PULONG aVersion, PULONG aFlags)
@@ -58,6 +59,13 @@ DebugExtensionInitialize(PULONG aVersion, PULONG aFlags)
                                     (void**)&gDebugRegisters);
   if (!gDebugRegisters) {
     dprintf("QueryInterface(IDebugRegisters2) failed\n");
+    return hr;
+  }
+
+  hr = gDebugClient->QueryInterface(__uuidof(IDebugSystemObjects4),
+                                    (void**)&gDebugSystemObjects);
+  if (!gDebugSystemObjects) {
+    dprintf("QueryInterface(IDebugSystemObjects4) failed\n");
     return hr;
   }
 

@@ -14,9 +14,11 @@
 #endif
 
 #include <algorithm>
+#include <assert.h>
 #include <fstream>
 #include <iomanip>
 #include <ios>
+#include <limits>
 #include <locale>
 #include <map>
 #include <memory>
@@ -24,6 +26,7 @@
 #include <string>
 #include <unordered_map>
 
+#pragma pack(push, 1)
 struct IMAGE_DEBUG_INFO_CODEVIEW
 {
   DWORD mSignature;
@@ -31,6 +34,7 @@ struct IMAGE_DEBUG_INFO_CODEVIEW
   DWORD mAge;
   char  mPath[1];
 };
+#pragma pack(pop)
 
 enum SymbolType
 {
@@ -169,36 +173,109 @@ SanitizeFilePath(std::string& aStr)
 
 static const size_t kSymBufLen = 0x1000000; // 16MB
 
+namespace {
+
+struct BpLineInfo
+{
+  BpLineInfo(ULONG64 aRva, ULONG aSize, ULONG64 aFileId, ULONG64 aNameInt)
+    : mRva(aRva)
+    , mSize(aSize)
+    , mFileId(aFileId)
+    , mNameInt(aNameInt)
+  {
+  }
+
+  ULONG64 mRva;
+  ULONG   mSize;
+  ULONG64 mFileId;
+  ULONG64 mNameInt;
+};
+
+struct ModuleInfo;
+
+// 1) sort by offset to do symbol lookup;
+// 2) sort by name to do name lookup
+struct BpSymbolInfo
+{
+  BpSymbolInfo(ULONG64 aRva, ULONG aSize, std::string& aName,
+               std::string& aParams)
+    : mRva(aRva)
+    , mSize(aSize)
+    , mName(aName)
+    , mParams(aParams)
+  {
+  }
+  ULONG64     mRva;
+  ULONG       mSize;
+  std::string mName;
+  std::string mParams;
+  std::weak_ptr<ModuleInfo> mModule;
+};
+
 struct ModuleInfo
 {
-  ModuleInfo(ULONG64 aBase, ULONG aSize, const std::string& aName)
-    : mBase(aBase)
-    , mLimit(aBase + aSize)
+  ModuleInfo(ULONG aSize, const std::string& aName)
+    : mSize(aSize)
     , mName(aName)
   {
   }
-  explicit ModuleInfo(ULONG64 aBase)
-    : mBase(aBase)
-    , mLimit(aBase)
-  {
-  }
-  bool operator<(const ModuleInfo& aOther) const
-  {
-    return mBase < aOther.mBase;
-  }
-  ULONG64     mBase;
-  ULONG64     mLimit;
+  ULONG64     mSize;
   std::string mName;
   typedef std::unordered_map<ULONG64,std::string> FileMapType;
   FileMapType mFileMap;
+  typedef std::map<UINT64,BpLineInfo> LineMapType;
+  LineMapType mSourceLineSyms;
+  typedef std::map<UINT64,BpSymbolInfo> SymbolMapType;
+  SymbolMapType mSymsByRva;
 };
 
-static std::map<ULONG64,ModuleInfo> gModuleInfo;
+struct ModuleKey
+{
+  ModuleKey(ULONG aPid, ULONG64 aBase)
+    : mPid(aPid)
+    , mBase(aBase)
+  {}
+  bool operator<(const ModuleKey& aOther) const
+  {
+    return mPid < aOther.mPid ||
+           mPid == aOther.mPid && mBase < aOther.mBase;
+  }
+  ULONG   mPid;
+  ULONG64 mBase;
+};
+
+} // anonymous namespace
+
+static std::map<std::string,std::shared_ptr<ModuleInfo>> gModuleInfoByName;
+static std::map<ModuleKey,std::shared_ptr<ModuleInfo>> gModuleInfoByKey;
+
+std::shared_ptr<ModuleInfo>
+EmplaceModule(const ULONG aPid, const std::string& aModName,
+              DEBUG_MODULE_PARAMETERS& aModParams)
+{
+  auto module = gModuleInfoByName.emplace(
+      std::piecewise_construct,
+      std::forward_as_tuple(aModName),
+      std::forward_as_tuple(std::make_shared<ModuleInfo>(aModParams.Size,
+                                                         aModName)));
+  gModuleInfoByKey.emplace(
+                      std::piecewise_construct,
+                      std::forward_as_tuple(ModuleKey(aPid, aModParams.Base)),
+                      std::forward_as_tuple((*module.first).second));
+
+  return module.first->second;
+}
 
 template <typename CallbackT>
 static void
-LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath, CallbackT&& aCb)
+LoadBpSymbolFile(ModuleInfo& aModuleInfo, const wchar_t* aSymPath,
+                 CallbackT&& aCb)
 {
+  // Don't load the symbols if we already have them in memory.
+  if (!aModuleInfo.mSymsByRva.empty()) {
+    return;
+  }
+
   auto buffer = std::make_unique<char[]>(kSymBufLen);
   std::ifstream i(aSymPath);
   if (!i) {
@@ -213,13 +290,7 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath, CallbackT&& aCb)
     return;
   }
   i.rdbuf()->pubsetbuf(buffer.get(), kSymBufLen);
-  auto& curModuleInfo = gModuleInfo.find(aBase);
-  if (curModuleInfo == gModuleInfo.end()) {
-    dprintf("Failed to find module info\n");
-    return;
-  }
-  ModuleInfo::FileMapType& fileMap = curModuleInfo->second.mFileMap;
-  ULONG64 low = 0xFFFFFFFFFFFFFFFF, high = 0;
+  ModuleInfo::FileMapType& fileMap = aModuleInfo.mFileMap;
   std::string moduleName;
   HRESULT hr;
   std::string line;
@@ -246,24 +317,20 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath, CallbackT&& aCb)
       ULONG64 address, size;
       issAddress >> std::hex >> address;
       issSize >> std::hex >> size;
-      low = std::min(low, aBase + address);
-      high = std::max(high, aBase + address);
       auto paramPos = tokens[4].find('(');
       std::string symName(tokens[4].substr(0, paramPos));
       std::string params;
       if (paramPos != std::string::npos) {
         params = tokens[4].substr(paramPos);
       }
-      aCb(eFunctionSymbol, aBase + address, size, aBase, symName, params,
+      aCb(eFunctionSymbol, address, size, aModuleInfo, symName, params,
           0, 0);
     } else if(startswith(line, "PUBLIC ")) {
       auto tokens = split(line, ' ', 4);
       std::istringstream issAddress(tokens[1]);
       ULONG64 address;
       issAddress >> std::hex >> address;
-      low = std::min(low, aBase + address);
-      high = std::max(high, aBase + address);
-      aCb(ePublicSymbol, aBase + address, 0, aBase, tokens[3], std::string(),
+      aCb(ePublicSymbol, address, 0, aModuleInfo, tokens[3], std::string(),
           0, 0);
     } else if (startswith(line, "FILE ")) {
       auto tokens = split(line, ' ', 3);
@@ -284,18 +351,17 @@ LoadBpSymbolFile(const ULONG64 aBase, const wchar_t* aSymPath, CallbackT&& aCb)
       issSize >> std::hex >> size;
       issLine >> std::dec >> lineNo;
       issFileId >> std::dec >> fileId;
-      aCb(eLineSymbol, aBase + address, size, aBase, std::string(),
+      aCb(eLineSymbol, address, size, aModuleInfo, std::string(),
           std::string(), fileId, lineNo);
     }
   }
-  symprintf("Module \"%s\": Base: 0x%p, Lowest symbol address: 0x%p, Highest "
-            "symbol address: 0x%p\n", moduleName.c_str(), aBase, low, high);
+  symprintf("Loaded Module \"%s\"\n", moduleName.c_str());
 }
 
 template <typename CallbackT>
 static bool
-LoadBpSymbols(const std::wstring& aBasePdbPath, const ULONG64 aBase,
-              CallbackT&& aCb)
+LoadBpSymbols(const std::wstring& aBasePdbPath, ModuleInfo& aModuleInfo,
+              const ULONG64 aBase, CallbackT&& aCb)
 {
   // Extract the unique ids for the pdb file from the module headers
   std::wstring uid, pdbFile;
@@ -322,7 +388,7 @@ LoadBpSymbols(const std::wstring& aBasePdbPath, const ULONG64 aBase,
     return false;
   }
   // Load the actual breakpad symbols
-  LoadBpSymbolFile(aBase, pdbPath, aCb);
+  LoadBpSymbolFile(aModuleInfo, pdbPath, aCb);
   return true;
 }
 
@@ -352,7 +418,7 @@ private:
   DisableStdioSync(const DisableStdioSync&&) = delete;
   DisableStdioSync& operator=(const DisableStdioSync&) = delete;
 
-  bool  mPrevSetting;
+  const bool  mPrevSetting;
 };
 
 } // anonymous namespace
@@ -363,9 +429,16 @@ LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
 {
   DisableStdioSync stdioSyncDisabled;
 
+  ULONG pid;
+  HRESULT hr = gDebugSystemObjects->GetCurrentProcessId(&pid);
+  if (FAILED(hr)) {
+    dprintf("GetCurrentProcessId failed\n");
+    return;
+  }
+
   // For now we only support loading from a single bp symbol path
-  if (!gBasePdbPath.empty()) {
-    dprintf("Breakpad symbols are already loaded\n");
+  if (!gBasePdbPath.empty() && HasModuleInfoForPid(pid)) {
+    dprintf("Breakpad symbols are already loaded for this process\n");
     return;
   }
 
@@ -379,7 +452,7 @@ LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
 
   // Get the module list;
   ULONG numLoaded, numUnloaded;
-  HRESULT hr = gDebugSymbols->GetNumberModules(&numLoaded, &numUnloaded);
+  hr = gDebugSymbols->GetNumberModules(&numLoaded, &numUnloaded);
   if (FAILED(hr)) {
     dprintf("GetNumberModules failed\n");
     return;
@@ -415,34 +488,37 @@ LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
       return;
     }
     modName.resize(modules[i].ModuleNameSize - 1);
-    gModuleInfo.emplace(std::piecewise_construct,
-                        std::forward_as_tuple(modules[i].Base),
-                        std::forward_as_tuple(modules[i].Base, modules[i].Size,
-                                              modName));
-    LoadBpSymbols(basePdbPath, modules[i].Base, aCb);
+    std::shared_ptr<ModuleInfo> moduleInfo = EmplaceModule(pid, modName,
+                                                           modules[i]);
+    LoadBpSymbols(basePdbPath, *moduleInfo, modules[i].Base, aCb);
   }
 
   mozilla::DbgExtCallbacks::RegisterModuleEventListener(
-    [=](PCWSTR aModName, ULONG64 aBaseAddress) {
+    [=](PCWSTR aModName, ULONG64 aBaseAddress, bool aIsLoad) -> void {
+      if (!aIsLoad) {
+        gModuleInfoByKey.erase(ModuleKey(pid, aBaseAddress));
+        return;
+      }
+
       DEBUG_MODULE_PARAMETERS modParams;
       HRESULT hr = gDebugSymbols->GetModuleParameters(1, &aBaseAddress, 0,
                                                       &modParams);
-      if (SUCCEEDED(hr)) {
-        std::string name(modParams.ModuleNameSize, 0);
-        hr = gDebugSymbols->GetModuleNameString(DEBUG_MODNAME_MODULE,
-                                                DEBUG_ANY_ID, aBaseAddress,
-                                                &name[0],
-                                                modParams.ModuleNameSize,
-                                                nullptr);
-        if (SUCCEEDED(hr)) {
-          name.resize(modParams.ModuleNameSize - 1);
-          gModuleInfo.emplace(std::piecewise_construct,
-                              std::forward_as_tuple(aBaseAddress),
-                              std::forward_as_tuple(aBaseAddress,
-                                                    modParams.Size, name));
-        }
+      if (FAILED(hr)) {
+        return;
       }
-      LoadBpSymbols(gBasePdbPath, aBaseAddress, aCb);
+      std::string name(modParams.ModuleNameSize, 0);
+      hr = gDebugSymbols->GetModuleNameString(DEBUG_MODNAME_MODULE,
+                                              DEBUG_ANY_ID, aBaseAddress,
+                                              &name[0],
+                                              modParams.ModuleNameSize,
+                                              nullptr);
+      if (FAILED(hr)) {
+        return;
+      }
+      name.resize(modParams.ModuleNameSize - 1);
+      std::shared_ptr<ModuleInfo> moduleInfo = EmplaceModule(pid, name,
+                                                             modParams);
+      LoadBpSymbols(gBasePdbPath, *moduleInfo, aBaseAddress, aCb);
     }
   );
 }
@@ -450,11 +526,12 @@ LoadBpSymbolsForModules(const char* aPath, CallbackT&& aCb)
 HRESULT CALLBACK
 bpsynthsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
-  LoadBpSymbolsForModules(aArgs, [](SymbolType aType, ULONG64 aOffset,
-                                    ULONG aSize, ULONG64 aModuleBae,
+  LoadBpSymbolsForModules(aArgs, [](SymbolType aType, ULONG64 aRva,
+                                    ULONG aSize, ModuleInfo& aModuleInfo,
                                     std::string& aName, std::string& aParams,
                                     ULONG64 aFileId, ULONG64 aNameInt)
                                       -> void {
+#if 0
       if (aType == eLineSymbol) {
         return;
       }
@@ -466,78 +543,67 @@ bpsynthsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
         dprintf("Failed to add synthetic symbol for \"%s\", hr 0x%08X\n",
                 aName.c_str(), hr);
       }
+#endif
     });
   return S_OK;
 }
 
-namespace {
-
-// 1) sort by offset to do symbol lookup;
-// 2) sort by name to do name lookup
-struct BpSymbolInfo
+static void
+ClearModuleInfoForPid(ULONG aPid)
 {
-  BpSymbolInfo(ULONG64 aOffset, ULONG aSize, ULONG64 aModuleBase,
-               ULONG64 aFileId, ULONG64 aNameInt)
-    : mOffset(aOffset)
-    , mSize(aSize)
-    , mModuleBase(aModuleBase)
-    , mFileId(aFileId)
-    , mNameInt(aNameInt)
-  {
+  auto first = gModuleInfoByKey.lower_bound(ModuleKey(aPid, std::numeric_limits<ULONG64>::min()));
+  auto last = gModuleInfoByKey.upper_bound(ModuleKey(aPid, std::numeric_limits<ULONG64>::max()));
+  // Once we've deleted all ModuleInfo for that pid, we need to see if
+  // that module is referenced by any other pids. Save the affected modules
+  // off to a temporary vector so that we can look into that.
+  std::vector<std::shared_ptr<ModuleInfo>> affectedModules;
+  for (auto itr = first; itr != last; ++itr) {
+    assert(itr->first.mPid == aPid);
+    affectedModules.emplace_back(itr->second);
   }
-  BpSymbolInfo(ULONG64 aOffset, ULONG aSize, ULONG64 aModuleBase,
-               std::string& aName, std::string& aParams)
-    : mOffset(aOffset)
-    , mSize(aSize)
-    , mModuleBase(aModuleBase)
-    , mName(aName)
-    , mParams(aParams)
-    , mFileId(0)
-    , mNameInt(0)
-  {
+  gModuleInfoByKey.erase(first, last);
+  // Now that the modules for the pid are gone, we should be able to check
+  // the refcount of the affected modules to tell us whether we can delete
+  // their entry from gModuleInfoByName as well.
+  for (auto&& m : affectedModules) {
+    if (m.use_count() == 2) {
+      // ie, the only users of this module are gModuleInfoByName and
+      // affectedModules
+      gModuleInfoByName.erase(m->mName);
+    }
   }
-  explicit BpSymbolInfo(ULONG64 aOffset)
-    : mOffset(aOffset)
-    , mSize(0)
-    , mModuleBase(0)
-    , mFileId(0)
-    , mNameInt(0)
-  {
-  }
-  ULONG64     mOffset;
-  ULONG       mSize;
-  ULONG64     mModuleBase;
-  std::string mName;
-  std::string mParams;
-  ULONG64     mFileId;
-  ULONG64     mNameInt;
-};
+}
 
-std::map<UINT64,BpSymbolInfo> gSourceLineSyms;
-std::map<UINT64,BpSymbolInfo> gSymsByOffset;
-
-} // anonymous namespace
+static bool
+HasModuleInfoForPid(ULONG aPid)
+{
+  auto first = gModuleInfoByKey.lower_bound(ModuleKey(aPid, std::numeric_limits<ULONG64>::min()));
+  auto last = gModuleInfoByKey.upper_bound(ModuleKey(aPid, std::numeric_limits<ULONG64>::max()));
+  return first != last;
+}
 
 HRESULT CALLBACK
 bploadsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
-  LoadBpSymbolsForModules(aArgs, [](SymbolType aType, ULONG64 aOffset,
-                                    ULONG aSize, ULONG64 aModuleBase,
+  static const bool kRegdPidUnload =
+    mozilla::DbgExtCallbacks::RegisterProcessDetachListener(&ClearModuleInfoForPid);
+  LoadBpSymbolsForModules(aArgs, [](SymbolType aType, ULONG64 aRva,
+                                    ULONG aSize, ModuleInfo& aModuleInfo,
                                     std::string& aName, std::string& aParams,
                                     ULONG64 aFileId, ULONG64 aNameInt)
                                       -> void {
       if (aType == eLineSymbol) {
-        gSourceLineSyms.emplace(std::piecewise_construct,
-                                std::forward_as_tuple(aOffset),
-                                std::forward_as_tuple(aOffset, aSize,
-                                                      aModuleBase, aFileId,
+        aModuleInfo.mSourceLineSyms.emplace(
+                                std::piecewise_construct,
+                                std::forward_as_tuple(aRva),
+                                std::forward_as_tuple(aRva, aSize, aFileId,
                                                       aNameInt));
         return;
       }
-      gSymsByOffset.emplace(std::piecewise_construct,
-                            std::forward_as_tuple(aOffset),
-                            std::forward_as_tuple(aOffset, aSize, aModuleBase,
-                                                  aName, aParams));
+      aModuleInfo.mSymsByRva.emplace(
+                            std::piecewise_construct,
+                            std::forward_as_tuple(aRva),
+                            std::forward_as_tuple(aRva, aSize, aName, aParams));
     });
   return S_OK;
 }
@@ -545,8 +611,14 @@ bploadsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
 HRESULT CALLBACK
 bpsyminfo(PDEBUG_CLIENT aClient, PCSTR aArgs)
 {
+  unsigned int symCount = 0;
+  unsigned int lineCount = 0;
+  for (auto&& i : gModuleInfoByName) {
+    symCount += i.second->mSymsByRva.size();
+    lineCount += i.second->mSourceLineSyms.size();
+  }
   dprintf("%u breakpad symbols loaded\n%u source line symbols loaded\n",
-          gSymsByOffset.size(), gSourceLineSyms.size());
+          symCount, lineCount);
   return S_OK;
 }
 
@@ -575,7 +647,7 @@ FindAndReplace(std::basic_string<CharType>& aStr,
   }
 }
 
-inline void
+static inline void
 ConvertToDml(std::string& aStr)
 {
   // This one needs to be first so we don't convert other entities
@@ -585,48 +657,114 @@ ConvertToDml(std::string& aStr)
   FindAndReplace(aStr, std::string("\""), std::string("&quot;"));
 }
 
+static bool
+GetEnclosingModule(ULONG64 const aOffset, std::string* aOutModuleName = nullptr)
+{
+  ULONG index;
+  HRESULT hr = gDebugSymbols->GetModuleByOffset(aOffset, 0, &index, nullptr);
+  if (FAILED(hr)) {
+    return false;
+  }
+
+  if (!aOutModuleName) {
+    return true;
+  }
+
+  ULONG nameLen = 0;
+  hr = gDebugSymbols->GetModuleNameString(DEBUG_MODNAME_MODULE, index, 0,
+                                          nullptr, 0, &nameLen);
+  if (FAILED(hr)) {
+    return false;
+  }
+  assert(nameLen > 0);
+
+  aOutModuleName->resize(nameLen);
+  hr = gDebugSymbols->GetModuleNameString(DEBUG_MODNAME_MODULE, index, 0,
+                                          const_cast<char*>(aOutModuleName->c_str()),
+                                          nameLen, nullptr);
+  return hr == S_OK;
+}
+
+static bool
+ResolveSymbolViaDbgEngine(ULONG64 const aOffset, std::string& aOutput,
+                          ULONG64& aOutSymOffset, ULONG aFlags)
+{
+  ULONG64 displacement = 0;
+  auto buf = std::make_unique<char[]>(kSymbolBufSize);
+  ULONG bufSize = kSymbolBufSize;
+  HRESULT hr = gDebugSymbols->GetNameByOffset(aOffset, buf.get(), bufSize,
+                                              &bufSize, &displacement);
+  if (FAILED(hr)) {
+    return false;
+  }
+  // TODO: Get line numbers if eIncludeLineNumbers is set
+  std::ostringstream oss;
+  oss << buf.get() << "+0x" << std::hex << displacement << " (pdb)";
+  gDebugSymbols->GetOffsetByName(buf.get(), &aOutSymOffset);
+  aOutput = oss.str();
+  return true;
+}
+
+static inline std::string
+OutputPointerValue(ULONG64 const aOffset)
+{
+  unsigned int width = gPointerWidth * 2;
+  std::ostringstream oss;
+  oss << "0x" << std::hex << std::nouppercase << std::setfill('0')
+      << std::setw(width) << aOffset;
+  return oss.str();
+}
+
 bool
 NearestSymbol(ULONG64 const aOffset, std::string& aOutput,
               ULONG64& aOutSymOffset, ULONG aFlags)
 {
   aOutput.clear();
-  std::ostringstream oss;
-  auto& symbol = gSymsByOffset.upper_bound(aOffset);
-  if (symbol == gSymsByOffset.begin() || symbol == gSymsByOffset.end()) {
-    // Try to fall back to the symbol engine
-    ULONG64 displacement = 0;
-    auto buf = std::make_unique<char[]>(kSymbolBufSize);
-    ULONG bufSize = kSymbolBufSize;
-    HRESULT hr = gDebugSymbols->GetNameByOffset(aOffset, buf.get(), bufSize,
-                                                &bufSize, &displacement);
-    if (FAILED(hr)) {
-      oss << "0x" << std::hex << aOffset;
-      aOutput = oss.str();
+
+  ULONG pid;
+  HRESULT hr = gDebugSystemObjects->GetCurrentProcessId(&pid);
+  if (FAILED(hr)) {
+    dprintf("GetCurrentProcessId failed\n");
+    return false;
+  }
+
+  auto module = gModuleInfoByKey.upper_bound(ModuleKey(pid, aOffset));
+  if (module == gModuleInfoByKey.begin()) {
+    if (GetEnclosingModule(aOffset) &&
+        ResolveSymbolViaDbgEngine(aOffset, aOutput, aOutSymOffset, aFlags)) {
       return true;
     }
-    // TODO: Get line numbers if eIncludeLineNumbers is set
-    oss << buf.get() << "+0x" << std::hex << displacement;
-    gDebugSymbols->GetOffsetByName(buf.get(), &aOutSymOffset);
-    aOutput = oss.str();
+    // We don't have a module for that, so just dump the hex value
+    // (useful for JITcode)
+    aOutput = OutputPointerValue(aOffset);
     return true;
   }
-  // This returns the first value >, but if it's > then we actually want the
-  // one <= that address
-  --symbol;
-  aOutSymOffset = symbol->second.mOffset;
-
-  auto& module = gModuleInfo.upper_bound(aOffset);
-  if (module == gModuleInfo.end()) {
-    oss << "0x" << std::hex << aOffset;
-    aOutput = oss.str();
-    return true;
-  }
+  // This returns the first module >, but if it's > then we actually want the
+  // one <= that key
   --module;
-  if (aOffset > module->second.mLimit) {
-    oss << "0x" << std::hex << aOffset;
-    aOutput = oss.str();
+  if (aOffset > (module->first.mBase + module->second->mSize)) {
+    if (ResolveSymbolViaDbgEngine(aOffset, aOutput, aOutSymOffset, aFlags)) {
+      return true;
+    }
+    // We don't have a module for that, so just dump the hex value
+    // (useful for JITcode)
+    aOutput = OutputPointerValue(aOffset);
     return true;
   }
+  ULONG64 rvaLookup = aOffset - module->first.mBase;
+  auto symbol = module->second->mSymsByRva.upper_bound(rvaLookup);
+  if (symbol == module->second->mSymsByRva.begin()) {
+    // Try to fall back to the symbol engine
+    if (ResolveSymbolViaDbgEngine(aOffset, aOutput, aOutSymOffset, aFlags)) {
+      return true;
+    }
+    aOutput = OutputPointerValue(aOffset);
+    return true;
+  }
+  // This returns the first symbol >, but if it's > then we actually want the
+  // one <= that RVA
+  --symbol;
+  aOutSymOffset = module->first.mBase + symbol->second.mRva;
 
   // We're going to output DML, so we need to escape any angle brackets in
   // the symbol name
@@ -635,25 +773,21 @@ NearestSymbol(ULONG64 const aOffset, std::string& aOutput,
     ConvertToDml(symName);
   }
 
-  auto& curModuleInfo = gModuleInfo.find(symbol->second.mModuleBase);
-  if (curModuleInfo == gModuleInfo.end()) {
-    dprintf("Error: ModuleInfo for base 0x%p not found\n",
-            symbol->second.mModuleBase);
-    return false;
-  }
-  std::string moduleName(curModuleInfo->second.mName);
+  std::string moduleName(module->second->mName);
   if (aFlags & eDMLOutput) {
     ConvertToDml(moduleName);
   }
-  const auto& fileMap = curModuleInfo->second.mFileMap;
+  const auto& fileMap = module->second->mFileMap;
 
-  ULONG64 offsetFromSym = aOffset - symbol->second.mOffset;
+  std::ostringstream oss;
+  ULONG64 offsetFromSym = aOffset - aOutSymOffset;
   oss << moduleName << "!" << symName << "+0x"
       << std::hex << offsetFromSym << std::flush;
   if ((aFlags & eIncludeLineNumbers) == eIncludeLineNumbers) {
-    auto& lineSymbol = gSourceLineSyms.upper_bound(aOffset);
-    if (lineSymbol != gSourceLineSyms.begin() &&
-        lineSymbol != gSourceLineSyms.end()) {
+    auto& sourceLineSyms = module->second->mSourceLineSyms;
+    auto& lineSymbol = sourceLineSyms.upper_bound(aOffset);
+    if (lineSymbol != sourceLineSyms.begin() &&
+        lineSymbol != sourceLineSyms.end()) {
       --lineSymbol;
       // Look up the file name
       auto& fileItr = fileMap.find(lineSymbol->second.mFileId);

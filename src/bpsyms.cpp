@@ -114,14 +114,8 @@ GetDebugInfoUniqueId(ULONG64 aBase, std::wstring& aId, std::wstring& aPdbName)
       return true;
     }
   }
-  wchar_t modNameBuf[64];
-  hr = gDebugSymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE,
-                                              DEBUG_ANY_ID, aBase,
-                                              modNameBuf, 64, nullptr);
-  if (SUCCEEDED(hr)) {
-    symprintf("Warning: No PDB reference found inside module \"%S\"\n",
-              modNameBuf);
-  }
+  symprintf("Warning: No PDB reference found inside module \"%S\"\n",
+            GetModuleName(aBase).c_str());
   return false;
 }
 
@@ -155,9 +149,10 @@ trim(std::string& aStr)
   }
 }
 
-template <size_t N>
+template <typename CharType, size_t N>
 static bool
-startswith(const std::string& aStr, const char (&aLiteral)[N])
+startswith(const std::basic_string<CharType>& aStr,
+           const CharType (&aLiteral)[N])
 {
   return aStr.find(aLiteral) == 0;
 }
@@ -317,7 +312,15 @@ LoadBpSymbolFile(ModuleInfo& aModuleInfo, const wchar_t* aSymPath,
       ULONG64 address, size;
       issAddress >> std::hex >> address;
       issSize >> std::hex >> size;
+      // Distinguish between func(params) and operator()(params)
       auto paramPos = tokens[4].find('(');
+      const auto strOperatorLen = ArrayLength("operator") - 1;
+      if (paramPos != std::string::npos && paramPos >= strOperatorLen) {
+        auto startPos = paramPos - strOperatorLen;
+        if (tokens[4].find("operator", startPos, strOperatorLen) == startPos) {
+          paramPos = tokens[4].find('(', paramPos + 1);
+        }
+      }
       std::string symName(tokens[4].substr(0, paramPos));
       std::string params;
       if (paramPos != std::string::npos) {
@@ -627,7 +630,8 @@ static const size_t kSymbolBufSize = 0x1000000;
 enum NearestSymbolFlags
 {
   eDMLOutput = 1,
-  eIncludeLineNumbers = 3 // Implies eDMLOutput
+  eIncludeLineNumbers = 2 | eDMLOutput,
+  eLazyAddSynthSyms = 4
 };
 
 template <typename CharType>
@@ -766,6 +770,12 @@ NearestSymbol(ULONG64 const aOffset, std::string& aOutput,
   --symbol;
   aOutSymOffset = module->first.mBase + symbol->second.mRva;
 
+  if (aFlags & eLazyAddSynthSyms) {
+    gDebugSymbols->AddSyntheticSymbol(aOutSymOffset, symbol->second.mSize,
+                                      symbol->second.mName.c_str(),
+                                      DEBUG_ADDSYNTHSYM_DEFAULT, nullptr);
+  }
+
   // We're going to output DML, so we need to escape any angle brackets in
   // the symbol name
   std::string symName(symbol->second.mName);
@@ -841,7 +851,7 @@ bpk(PDEBUG_CLIENT aClient, PCSTR aArgs)
     std::string symOutput;
     ULONG64 symOffset;
     if (!NearestSymbol(frames[i].InstructionOffset, symOutput, symOffset,
-                       eDMLOutput)) {
+                       eDMLOutput | eLazyAddSynthSyms)) {
       symOutput = "<No symbol found>";
       ConvertToDml(symOutput);
     }
@@ -867,7 +877,7 @@ bpln(PDEBUG_CLIENT aClient, PCSTR aArgs)
   }
   std::string symOutput;
   ULONG64 symOffset;
-  if (!NearestSymbol(address, symOutput, symOffset)) {
+  if (!NearestSymbol(address, symOutput, symOffset, eLazyAddSynthSyms)) {
     symOutput = "<No symbol found>";
   }
   if (gPointerWidth == 4) {

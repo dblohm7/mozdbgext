@@ -139,5 +139,33 @@ ToChar(const std::wstring& aWideStr, std::string& aStr,
   return true;
 }
 
+inline std::wstring
+GetModuleName(ULONG64 const aBase)
+{
+  ULONG reallen = 0;
+  HRESULT hr = gDebugSymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE,
+                                                      DEBUG_ANY_ID, aBase,
+                                                      nullptr, 0, &reallen);
+  if (FAILED(hr) || hr != S_FALSE) {
+    return L"(Error retrieving module name size)";
+  }
+
+  auto buf = std::make_unique<wchar_t[]>(reallen);
+  hr = gDebugSymbols->GetModuleNameStringWide(DEBUG_MODNAME_MODULE,
+                                              DEBUG_ANY_ID, aBase,
+                                              buf.get(), reallen, nullptr);
+  if (FAILED(hr)) {
+    return L"(Error retrieving module name)";
+  }
+
+  return std::wstring(buf.get());
+}
+
+template <typename T, size_t N>
+size_t ArrayLength(T (&aArray)[N])
+{
+  return N;
+}
+
 #endif // __MOZDBGEXT_H
 

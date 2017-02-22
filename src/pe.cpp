@@ -29,18 +29,21 @@ GetDataDirectoryEntry(ULONG64 const aModuleBase, ULONG const aEntryIndex,
   HRESULT hr = gDebugDataSpaces->ReadVirtual(aModuleBase, &header,
                                              sizeof(IMAGE_DOS_HEADER), nullptr);
   if (FAILED(hr)) {
-    dprintf("Failed to read IMAGE_DOS_HEADER\n");
+    dprintf("Failed to read IMAGE_DOS_HEADER for module \"%S\"\n",
+            GetModuleName(aModuleBase).c_str());
     return false;
   }
   ULONG64 ntBase = aModuleBase + header.e_lfanew;
   if (gPointerWidth == 4) {
     if (!GetDataDirectoryEntry<IMAGE_NT_HEADERS32>(aModuleBase, ntBase, aEntryIndex, aEntryBase, aEntrySize)) {
-      dprintf("Failed to read IMAGE_NT_HEADERS\n");
+      dprintf("Failed to read IMAGE_NT_HEADERS for module \"%S\"\n",
+              GetModuleName(aModuleBase).c_str());
       return false;
     }
   } else {
     if (!GetDataDirectoryEntry<IMAGE_NT_HEADERS64>(aModuleBase, ntBase, aEntryIndex, aEntryBase, aEntrySize)) {
-      dprintf("Failed to read IMAGE_NT_HEADERS\n");
+      dprintf("Failed to read IMAGE_NT_HEADERS for module \"%S\"\n",
+              GetModuleName(aModuleBase).c_str());
       return false;
     }
   }

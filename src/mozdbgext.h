@@ -167,5 +167,30 @@ size_t ArrayLength(T (&aArray)[N])
   return N;
 }
 
+inline HRESULT
+GetFieldOffset(PCSTR aModuleName, PCSTR aTypeName, PCSTR aFieldName,
+               PULONG aOffset)
+{
+  if (!aModuleName || !aTypeName || !aFieldName || !aOffset) {
+    return E_INVALIDARG;
+  }
+
+  *aOffset = 0;
+
+  ULONG64 modBase;
+  HRESULT hr = gDebugSymbols->GetModuleByModuleName(aModuleName, 0, 0, &modBase);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  ULONG typeId;
+  hr = gDebugSymbols->GetTypeId(modBase, aTypeName, &typeId);
+  if (FAILED(hr)) {
+    return hr;
+  }
+
+  return gDebugSymbols->GetFieldOffset(modBase, typeId, aFieldName, aOffset);
+}
+
 #endif // __MOZDBGEXT_H
 

@@ -2,6 +2,7 @@ LIBRARY mozdbgext
 EXPORTS
   DebugExtensionInitialize
   KnownStructOutput
+  actctx
   bpk
   bpln
   bploadsyms

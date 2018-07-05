@@ -220,8 +220,11 @@ struct ModuleInfo
   FileMapType mFileMap;
   typedef std::map<UINT64,BpLineInfo> LineMapType;
   LineMapType mSourceLineSyms;
-  typedef std::map<UINT64,BpSymbolInfo> SymbolMapType;
-  SymbolMapType mSymsByRva;
+  typedef std::shared_ptr<BpSymbolInfo> MapValueSymbol;
+  typedef std::map<UINT64,MapValueSymbol> SymbolRvaMapType;
+  SymbolRvaMapType mSymsByRva;
+  typedef std::map<std::string,MapValueSymbol> SymbolNameMapType;
+  SymbolNameMapType mSymsByName;
 };
 
 struct ModuleKey
@@ -607,10 +610,10 @@ bploadsyms(PDEBUG_CLIENT aClient, PCSTR aArgs)
                                                       aNameInt));
         return;
       }
-      aModuleInfo.mSymsByRva.emplace(
-                            std::piecewise_construct,
-                            std::forward_as_tuple(aRva),
-                            std::forward_as_tuple(aRva, aSize, aName, aParams));
+
+      auto symPtr = std::make_shared<BpSymbolInfo>(aRva, aSize, aName, aParams);
+      aModuleInfo.mSymsByRva.emplace(aRva, symPtr);
+      aModuleInfo.mSymsByName.emplace(aName, std::move(symPtr));
     });
   return S_OK;
 }
@@ -772,17 +775,17 @@ NearestSymbol(ULONG64 const aOffset, std::string& aOutput,
   // This returns the first symbol >, but if it's > then we actually want the
   // one <= that RVA
   --symbol;
-  aOutSymOffset = module->first.mBase + symbol->second.mRva;
+  aOutSymOffset = module->first.mBase + symbol->second->mRva;
 
   if (aFlags & eLazyAddSynthSyms) {
-    gDebugSymbols->AddSyntheticSymbol(aOutSymOffset, symbol->second.mSize,
-                                      symbol->second.mName.c_str(),
+    gDebugSymbols->AddSyntheticSymbol(aOutSymOffset, symbol->second->mSize,
+                                      symbol->second->mName.c_str(),
                                       DEBUG_ADDSYNTHSYM_DEFAULT, nullptr);
   }
 
   // We're going to output DML, so we need to escape any angle brackets in
   // the symbol name
-  std::string symName(symbol->second.mName);
+  std::string symName(symbol->second->mName);
   if (aFlags & eDMLOutput) {
     EscapeForDml(symName);
   }
@@ -889,5 +892,89 @@ bpln(PDEBUG_CLIENT aClient, PCSTR aArgs)
   } else {
     dprintf("(%016I64x)   %s\n", symOffset, symOutput.c_str());
   }
+  return S_OK;
+}
+
+static bool
+CrackSymbolicName(PCSTR aArgs, std::string& aOutModule, std::string& aSymName)
+{
+  aOutModule.clear();
+  aSymName.clear();
+
+  auto tokens = split(std::string(aArgs), '!', 2);
+  if (tokens.size() != 2) {
+    return false;
+  }
+
+  aOutModule = tokens[0];
+  aSymName = tokens[1];
+  return true;
+}
+
+static ModuleInfo::MapValueSymbol
+LookupSymbolByName(const std::string& aModule, const std::string& aName)
+{
+  auto itr = gModuleInfoByName.find(aModule);
+  if (itr == gModuleInfoByName.end()) {
+    dprintf("Module \"%s\" not found\n", aModule.c_str());
+    return nullptr;
+  }
+
+  auto entry = itr->second->mSymsByName.find(aName);
+  if (entry == itr->second->mSymsByName.end()) {
+    dprintf("Symbol \"%s!%s\" not found\n", aModule.c_str(), aName.c_str());
+    return nullptr;
+  }
+
+  return entry->second;
+}
+
+HRESULT CALLBACK
+bpbp(PDEBUG_CLIENT aClient, PCSTR aArgs)
+{
+  std::string module, name;
+
+  if (!CrackSymbolicName(aArgs, module, name)) {
+    dprintf("Failed to parse symbolic name; use |module!name| format\n");
+    return E_FAIL;
+  }
+
+  auto sym = LookupSymbolByName(module, name);
+  if (!sym) {
+    return E_FAIL;
+  }
+
+  IDebugBreakpointPtr bp;
+  HRESULT hr = gDebugControl->AddBreakpoint(DEBUG_BREAKPOINT_CODE,
+                                            DEBUG_ANY_ID, &bp);
+  if (FAILED(hr)) {
+    dprintf("IDebugControl3::AddBreakpoint failed with HRESULT 0x%08X\n", hr);
+    return hr;
+  }
+
+  ULONG64 offset;
+  hr = gDebugSymbols->GetModuleByModuleName(module.c_str(), 0, nullptr, &offset);
+  if (FAILED(hr)) {
+    dprintf("IDebugSymbols2::GetModuleByModuleName failed with HRESULT 0x%08X\n", hr);
+    return hr;
+  }
+
+  offset += sym->mRva;
+
+  hr = bp->SetOffset(offset);
+  if (FAILED(hr)) {
+    dprintf("IDebugBreakpoint::SetOffset failed with HRESULT 0x%08X\n", hr);
+    return hr;
+  }
+
+  hr = bp->AddFlags(DEBUG_BREAKPOINT_ENABLED);
+  if (FAILED(hr)) {
+    dprintf("IDebugBreakpoint::AddFlags failed with HRESULT 0x%08X\n", hr);
+    return hr;
+  }
+
+  gDebugSymbols->AddSyntheticSymbol(offset, sym->mSize, sym->mName.c_str(),
+                                    DEBUG_ADDSYNTHSYM_DEFAULT, nullptr);
+
   return S_OK;
 }

@@ -340,8 +340,7 @@ LoadBpSymbolFile(ModuleInfo& aModuleInfo, const wchar_t* aSymPath,
       std::istringstream issFileId(tokens[1]);
       ULONG64 fileId;
       issFileId >> std::dec >> fileId;
-      fileMap[fileId] = tokens[2];
-      SanitizeFilePath(fileMap[fileId]);
+      SanitizeFilePath(fileMap[fileId] = tokens[2]);
     } else if (std::isxdigit(line[0], std::locale::classic())) {
       // line record
       auto tokens = split(line, ' ', 4);
@@ -420,6 +419,7 @@ private:
   DisableStdioSync(const DisableStdioSync&) = delete;
   DisableStdioSync(const DisableStdioSync&&) = delete;
   DisableStdioSync& operator=(const DisableStdioSync&) = delete;
+  DisableStdioSync& operator=(DisableStdioSync&&) = delete;
 
   const bool  mPrevSetting;
 };
@@ -556,15 +556,19 @@ ClearModuleInfoForPid(ULONG aPid)
 {
   auto first = gModuleInfoByKey.lower_bound(ModuleKey(aPid, std::numeric_limits<ULONG64>::min()));
   auto last = gModuleInfoByKey.upper_bound(ModuleKey(aPid, std::numeric_limits<ULONG64>::max()));
+
   // Once we've deleted all ModuleInfo for that pid, we need to see if
   // that module is referenced by any other pids. Save the affected modules
   // off to a temporary vector so that we can look into that.
   std::vector<std::shared_ptr<ModuleInfo>> affectedModules;
+
   for (auto itr = first; itr != last; ++itr) {
     assert(itr->first.mPid == aPid);
     affectedModules.emplace_back(itr->second);
   }
+
   gModuleInfoByKey.erase(first, last);
+
   // Now that the modules for the pid are gone, we should be able to check
   // the refcount of the affected modules to tell us whether we can delete
   // their entry from gModuleInfoByName as well.
@@ -652,7 +656,7 @@ FindAndReplace(std::basic_string<CharType>& aStr,
 }
 
 static inline void
-ConvertToDml(std::string& aStr)
+EscapeForDml(std::string& aStr)
 {
   // This one needs to be first so we don't convert other entities
   FindAndReplace(aStr, std::string("&"), std::string("&amp;"));
@@ -780,12 +784,12 @@ NearestSymbol(ULONG64 const aOffset, std::string& aOutput,
   // the symbol name
   std::string symName(symbol->second.mName);
   if (aFlags & eDMLOutput) {
-    ConvertToDml(symName);
+    EscapeForDml(symName);
   }
 
   std::string moduleName(module->second->mName);
   if (aFlags & eDMLOutput) {
-    ConvertToDml(moduleName);
+    EscapeForDml(moduleName);
   }
   const auto& fileMap = module->second->mFileMap;
 
@@ -806,7 +810,7 @@ NearestSymbol(ULONG64 const aOffset, std::string& aOutput,
         return false;
       }
       std::string file(fileItr->second);
-      ConvertToDml(file);
+      EscapeForDml(file);
       oss << " [<exec cmd=\".open " << file << "\">"
           << file
           << "</exec>"
@@ -853,7 +857,7 @@ bpk(PDEBUG_CLIENT aClient, PCSTR aArgs)
     if (!NearestSymbol(frames[i].InstructionOffset, symOutput, symOffset,
                        eDMLOutput | eLazyAddSynthSyms)) {
       symOutput = "<No symbol found>";
-      ConvertToDml(symOutput);
+      EscapeForDml(symOutput);
     }
 #ifdef DEBUG_DML
     dprintf("symOutput.length() == %u\n", symOutput.length());

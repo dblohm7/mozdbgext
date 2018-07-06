@@ -22,6 +22,7 @@
 #include <locale>
 #include <map>
 #include <memory>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -309,35 +310,56 @@ LoadBpSymbolFile(ModuleInfo& aModuleInfo, const wchar_t* aSymPath,
         moduleName.erase(moduleName.begin() + pos, moduleName.end());
       }
     } else if (startswith(line, "FUNC ")) {
-      auto tokens = split(line, ' ', 5);
-      std::istringstream issAddress(tokens[1]);
-      std::istringstream issSize(tokens[2]);
+      std::vector<std::string> tokens;
+      size_t startIndex;
+
+      if (startswith(line, "FUNC m ")) {
+        tokens = split(line, ' ', 6);
+        startIndex = 2;
+      } else {
+        tokens = split(line, ' ', 5);
+        startIndex = 1;
+      }
+
+      std::istringstream issAddress(tokens[startIndex]);
+      std::istringstream issSize(tokens[startIndex + 1]);
       ULONG64 address, size;
       issAddress >> std::hex >> address;
       issSize >> std::hex >> size;
       // Distinguish between func(params) and operator()(params)
-      auto paramPos = tokens[4].find('(');
+      const size_t funcNameIndex = startIndex + 3;
+      auto paramPos = tokens[funcNameIndex].find('(');
       const auto strOperatorLen = ArrayLength("operator") - 1;
       if (paramPos != std::string::npos && paramPos >= strOperatorLen) {
         auto startPos = paramPos - strOperatorLen;
-        if (tokens[4].find("operator", startPos, strOperatorLen) == startPos) {
-          paramPos = tokens[4].find('(', paramPos + 1);
+        if (tokens[funcNameIndex].find("operator", startPos, strOperatorLen) == startPos) {
+          paramPos = tokens[funcNameIndex].find('(', paramPos + 1);
         }
       }
-      std::string symName(tokens[4].substr(0, paramPos));
+      std::string symName(tokens[funcNameIndex].substr(0, paramPos));
       std::string params;
       if (paramPos != std::string::npos) {
-        params = tokens[4].substr(paramPos);
+        params = tokens[funcNameIndex].substr(paramPos);
       }
       aCb(eFunctionSymbol, address, size, aModuleInfo, symName, params,
           0, 0);
     } else if(startswith(line, "PUBLIC ")) {
-      auto tokens = split(line, ' ', 4);
-      std::istringstream issAddress(tokens[1]);
+      std::vector<std::string> tokens;
+      size_t startIndex;
+
+      if (startswith(line, "PUBLIC m ")) {
+        tokens = split(line, ' ', 5);
+        startIndex = 2;
+      } else {
+        tokens = split(line, ' ', 4);
+        startIndex = 1;
+      }
+
+      std::istringstream issAddress(tokens[startIndex]);
       ULONG64 address;
       issAddress >> std::hex >> address;
-      aCb(ePublicSymbol, address, 0, aModuleInfo, tokens[3], std::string(),
-          0, 0);
+      aCb(ePublicSymbol, address, 0, aModuleInfo, tokens[startIndex + 2],
+          std::string(), 0, 0);
     } else if (startswith(line, "FILE ")) {
       auto tokens = split(line, ' ', 3);
       std::istringstream issFileId(tokens[1]);
@@ -935,7 +957,7 @@ bpbp(PDEBUG_CLIENT aClient, PCSTR aArgs)
   std::string module, name;
 
   if (!CrackSymbolicName(aArgs, module, name)) {
-    dprintf("Failed to parse symbolic name; use |module!name| format\n");
+    dprintf("Failed to parse symbol name; use |module!name| format\n");
     return E_FAIL;
   }
 
@@ -978,3 +1000,89 @@ bpbp(PDEBUG_CLIENT aClient, PCSTR aArgs)
 
   return S_OK;
 }
+
+// This function isn't a generic conversion function; it only handles the cases
+// that we expect to see as input to the bpx command.
+static std::regex
+GlobToRegex(const std::string& aGlob)
+{
+  std::string re(1, '^');
+
+  for (auto&& c : aGlob) {
+    switch (c) {
+      // TODO ASK: Support '#'
+      case '*':
+      case '?':
+      case '+':
+        re += '.';
+        break;
+      default:
+        break;
+    }
+
+    re += c;
+  }
+
+  re += '$';
+
+  return std::regex(re, std::regex_constants::extended |
+                        std::regex_constants::icase);
+}
+
+static std::string
+InitialNonGlobChars(const std::string& aGlob)
+{
+  std::string result;
+
+  for (auto&& c : aGlob) {
+    switch (c) {
+      case '*':
+      case '?':
+      case '#':
+      case '+':
+      case '[':
+        return result;
+      default:
+        break;
+    }
+
+    result += c;
+  }
+
+  return result;
+}
+
+HRESULT CALLBACK
+bpx(PDEBUG_CLIENT aClient, PCSTR aArgs)
+{
+  std::string module, symGlob;
+
+  if (!CrackSymbolicName(aArgs, module, symGlob)) {
+    dprintf("Failed to parse symbol name; use |module!name| format\n");
+    return E_FAIL;
+  }
+
+  auto moduleInfo = gModuleInfoByName.find(module);
+  if (moduleInfo == gModuleInfoByName.end()) {
+    dprintf("Module \"%s\" not found\n", module.c_str());
+    return E_FAIL;
+  }
+
+  auto& symsByName = moduleInfo->second->mSymsByName;
+  auto nonGlob(InitialNonGlobChars(symGlob));
+
+  auto first = symsByName.lower_bound(nonGlob);
+  if (first != symsByName.begin()) {
+    --first;
+  }
+
+  std::regex re(GlobToRegex(symGlob));
+  for (auto itr = first; itr != symsByName.end(); ++itr) {
+    if (std::regex_match(itr->first, re)) {
+      dprintf("%s!%s\n", module.c_str(), itr->first.c_str());
+    }
+  }
+
+  return S_OK;
+}
+
